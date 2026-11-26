@@ -249,6 +249,7 @@ class Companion:
         self.cancelar = threading.Event()
         self.proc: subprocess.Popen | None = None
         self.whisper = None
+        self.confianza = (1.0, -9.0)
         self.idioma = "es"                    # el de la última frase (es o zh)
         self.captura = bytearray()
         self.permisos_enviados: set[str] = set()
@@ -512,7 +513,8 @@ class Companion:
                 self.decir(p["decir"])
 
     # --- voz -> texto ---
-    def transcribir(self, audio: bytes, guardar: bool = True) -> str:
+    def transcribir(self, audio: bytes, guardar: bool = True, pista: bool = True) -> str:
+        """Audio -> texto. Deja en self.confianza si de verdad había voz (para "Oye Clawd")."""
         muestras = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768
         muestras -= muestras.mean()
         pico = np.abs(muestras).max()
@@ -525,7 +527,7 @@ class Companion:
         # Idioma: lo detecta Whisper. Valen español, inglés, chino y catalán; si cree que es
         # otro (pasa con frases muy cortas), se repite en el idioma elegido en la placa.
         ui = IDIOMA_UI["actual"]
-        opciones = dict(vad_filter=True, initial_prompt=I.PISTA[ui])
+        opciones = dict(vad_filter=True, initial_prompt=I.PISTA[ui] if pista else None)
         segs, info = self.whisper.transcribe(muestras, language=None, **opciones)
         if info.language not in I.IDIOMAS:
             segs, info = self.whisper.transcribe(muestras, language=ui, **opciones)
@@ -535,7 +537,15 @@ class Companion:
             # detectado el idioma, aún no se ha transcrito nada: casi no cuesta.
             lang = info.language
             segs, info = self.whisper.transcribe(muestras, language=lang, vad_filter=True,
-                                                 initial_prompt=I.PISTA[lang])
+                                                 initial_prompt=I.PISTA[lang] if pista else None)
+        segs = list(segs)
+        # ¿de verdad había voz? Whisper lo dice: probabilidad de "aquí no habla nadie" y
+        # cómo de seguro está de cada palabra (logprob: cerca de 0 = muy seguro)
+        if segs:
+            self.confianza = (max(s.no_speech_prob for s in segs),
+                              sum(s.avg_logprob for s in segs) / len(segs))
+        else:
+            self.confianza = (1.0, -9.0)
         self.idioma = info.language
         if info.language != ui:
             log("Idioma detectado:", I.NOMBRE[info.language])
@@ -549,7 +559,10 @@ class Companion:
         segundos = len(audio) / 32000
         if not self.whisper or segundos < 0.5 or self.ocupado:
             return
-        texto = self.transcribir(audio, guardar=False)
+        texto = self.transcribir(audio, guardar=False, pista=False)   # sin pista: nada que "alucinar"
+        sin_voz, seguridad = self.confianza
+        if sin_voz > 0.5 or seguridad < -1.0:
+            return                                     # ruido, o Whisper no está seguro: nada
         llano = solo_ascii(texto)
         m = I.LLAMADA.match(llano)
         if not m:

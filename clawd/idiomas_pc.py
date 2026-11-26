@@ -20,12 +20,14 @@ VOCES = {
 }
 CARPETA_VOCES = Path.home() / ".local/share/clawd/voces"
 
-# Vocabulario que se le da a Whisper para que acierte palabras raras (en el idioma elegido)
+# Vocabulario que se le da a Whisper para que acierte palabras raras (en el idioma elegido).
+# OJO: NUNCA poner aquí "Oye Clawd". Con ruido (sin palabras), Whisper "alucina" y escribe
+# la pista tal cual: escribía "Oye Clawd." y Clawd se ponía a escuchar solo.
 PISTA = {
-    "es": "Oye Clawd. Claude, pomodoro, temporizador, archivo, carpeta, proyecto, commit.",
-    "en": "Hey Clawd. Claude, pomodoro, timer, file, folder, project, commit.",
-    "zh": "嘿 Clawd。Claude，番茄钟，计时器，文件，文件夹，项目。",
-    "ca": "Ei Clawd. Claude, pomodoro, temporitzador, fitxer, carpeta, projecte, commit.",
+    "es": "Claude, pomodoro, temporizador, archivo, carpeta, proyecto, commit.",
+    "en": "Claude, pomodoro, timer, file, folder, project, commit.",
+    "zh": "Claude，番茄钟，计时器，文件，文件夹，项目。",
+    "ca": "Claude, pomodoro, temporitzador, fitxer, carpeta, projecte, commit.",
 }
 
 # "Oye Clawd" en los cuatro idiomas (y cómo lo suele escribir Whisper)
