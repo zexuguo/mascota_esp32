@@ -3,7 +3,7 @@
 - ORDENES:   lo que Clawd hace solo cuando se lo dices (en cada idioma)
 - MSG:       los mensajes que el companion manda a la placa o dice en voz alta
 - segundos_de(): "diez minutos" / "ten minutes" / "deu minuts" / "十分钟" -> 600
-- fecha(), VOCES, LLAMADA ("Oye/Hey/Ei/嘿 Clawd"), PISTA (vocabulario para Whisper)
+- fecha(), VOCES, LLAMADAS ("Oye / Hey / Ei / 嘿 Clawd", cada una en su idioma), PISTA
 """
 import datetime
 import re
@@ -30,10 +30,16 @@ PISTA = {
     "ca": "Claude, pomodoro, temporitzador, fitxer, carpeta, projecte, commit.",
 }
 
-# "Oye Clawd" en los cuatro idiomas (y cómo lo suele escribir Whisper)
-LLAMADA = re.compile(
-    r"^\s*(oye|hey|ey|ei|eh|hola|hello|hi|vale|嘿|喂|你好|哎)?[\s,，、。!！]*"
-    r"(clawd|claude|clod|cloud|clau|claud|clow|glod|克劳德|克劳迪|可劳德|克劳)[\s,，、。.!！?？]*", re.I)
+# La llamada: SOLO la de cada idioma, completa ("Clawd" a secas o "Hola Claude" no valen).
+# Se mira con el idioma que ha detectado Whisper. Las variantes son cómo lo suele escribir.
+_NOMBRE = r"(clawd|claude|clod|cloud|claud|clow|glod|klod)"
+LLAMADAS = {
+    "es": re.compile(r"^\s*(oye|oie)[\s,.!¡]*" + _NOMBRE + r"\b[\s,.!?¿]*", re.I),
+    "en": re.compile(r"^\s*(hey|hay)[\s,.!]*" + _NOMBRE + r"\b[\s,.!?]*", re.I),
+    "ca": re.compile(r"^\s*(ei|ey|hei|hey)[\s,.!]*" + _NOMBRE + r"\b[\s,.!?]*", re.I),
+    "zh": re.compile(r"^\s*(嘿|黑|嗨|hey)[\s,，、。!！]*(" + _NOMBRE[1:-1] + r"|克劳德|克劳迪|可劳德|克劳)[\s,，、。.!！?？]*", re.I),
+}
+
 
 INSTRUCCIONES_IDIOMA = (
     "Responde en el mismo idioma en que te hable: español, inglés, chino simplificado o catalán "

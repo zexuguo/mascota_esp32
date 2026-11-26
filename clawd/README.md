@@ -117,7 +117,7 @@ esté en silencio** (un temporizador que no suena no sirve), como mucho 1 minuto
 - **Oye Clawd** (cortina): la placa solo manda audio al PC cuando nota voz (punto verde en la barra mientras lo hace).
   El PC lo pasa a texto en local y **solo hace caso si empieza por "Oye Clawd"** (o "Clawd" / "Claude");
   si no, lo tira sin guardarlo. "Oye Clawd, pon un temporizador de 5 minutos" lo hace directamente;
-  "Oye Clawd" a secas: te escucha y se para sola cuando te callas. No escucha con "No molestar", música o en los juegos.
+  "Oye Clawd" a secas: te escucha y se para sola cuando te callas. **Solo la llamada completa de cada idioma**: "Oye Clawd" (es), "Hey Clawd" (en), "Ei Clawd" (ca), "嘿 Clawd" (zh); "Clawd" a secas o "Hola Claude" no valen. No escucha con "No molestar", música o en los juegos.
 - **Habla** (cortina): Clawd dice en voz alta las respuestas de Claude, cuando termina y cuando pide permiso.
   Voz **Piper `es_ES-sharvard-medium`** (en local, `~/.local/share/clawd/voces/`), elegida comparando con Whisper.
   El PC la genera y la manda a la placa en tiempo real (trozos de 30 ms).

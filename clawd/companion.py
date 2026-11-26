@@ -564,7 +564,7 @@ class Companion:
         if sin_voz > 0.5 or seguridad < -1.0:
             return                                     # ruido, o Whisper no está seguro: nada
         llano = solo_ascii(texto)
-        m = I.LLAMADA.match(llano)
+        m = I.LLAMADAS.get(self.idioma, I.LLAMADAS["es"]).match(llano)   # la llamada de SU idioma
         if not m:
             return                                     # no era para Clawd: no se guarda nada
         resto = llano[m.end():].strip()
