@@ -50,7 +50,10 @@ bool rep_meter(const int16_t *m, int n) {
   rep_cab += n;
   return true;
 }
-void rep_callar() { rep_cola = rep_cab; rep_nivel = 0; }
+// Callar: el loop solo lo PIDE; quien mueve rep_cola es la tarea de audio (si la movieran
+// los dos núcleos a la vez, rep_cola podría pasar a rep_cab y sonaría basura sin parar)
+volatile bool rep_vaciar = false;
+void rep_callar() { rep_vaciar = true; }
 
 // Medio segundo "de antes": se guarda siempre, para que "Oye Clawd" no pierda
 // el principio de lo que dices (cuando la placa nota la voz, ya ha empezado).
@@ -126,6 +129,7 @@ static void tarea_audio(void *) {
       ignorar_mic_hasta = millis() + 250;   // que no se asuste de sí mismo
       continue;
     }
+    if (rep_vaciar) { rep_cola = rep_cab; rep_nivel = 0; rep_vaciar = false; }
     if (rep_hay() >= 256 || (rep_hay() > 0 && millis() - rep_ultimo > 120)) {   // hay voz que decir
       int k = min((uint32_t)256, rep_hay());
       double acc = 0;

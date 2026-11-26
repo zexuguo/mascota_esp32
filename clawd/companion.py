@@ -250,9 +250,16 @@ class Companion:
         self.proc: subprocess.Popen | None = None
         self.whisper = None
         self.confianza = (1.0, -9.0)
+        self.ultimo_dicho = ("", 0.0)
+        self.grabacion = None                # de quién es el audio que llega: "pulsar" / "auto"
+        self.lock_whisper = threading.Lock() # Whisper, de uno en uno
+        self.lock_claude = threading.Lock()  # para que no arranquen dos Claude a la vez
+        self.voz_t = 0.0                     # cuándo se usó Claude por voz por última vez
+        self.trabajando_desde = time.time()
         self.idioma = "es"                    # el de la última frase (es o zh)
         self.captura = bytearray()
         self.permisos_enviados: set[str] = set()
+        self.permiso_ultimo_envio = 0.0
         self.captura_pantalla = 0
         CARPETA_ESTADO.mkdir(parents=True, exist_ok=True)
         self.f_sesion = CARPETA_ESTADO / "sesion"
@@ -282,7 +289,12 @@ class Companion:
     def decir(self, texto: str, idioma: str | None = None):
         """Decirlo en voz alta. Idioma: el que se diga, o chino si hay caracteres chinos,
         o el de la última frase que le has dicho, o el de la placa."""
-        if self.hablar_on and texto.strip():
+        if not (self.hablar_on and texto.strip()):
+            return
+        if texto == self.ultimo_dicho[0] and time.time() - self.ultimo_dicho[1] < 15:
+            return                                     # lo mismo hace nada: no repetirlo
+        self.ultimo_dicho = (texto, time.time())
+        if True:
             idioma = I.idioma_de_texto(texto, idioma or self.idioma or IDIOMA_UI["actual"])
             self.cola_habla.put((texto, idioma if idioma in I.IDIOMAS else "es"))
 
@@ -331,7 +343,7 @@ class Companion:
                 if self.callar.is_set():
                     self.enviar({"callar": 1})
                     break
-                espera = inicio + (i / trozo) * 0.03 - 0.3 - time.time()
+                espera = inicio + (i / trozo) * 0.03 - 0.12 - time.time()
                 if espera > 0:
                     time.sleep(espera)
                 from base64 import b64encode
@@ -369,6 +381,15 @@ class Companion:
         psutil.cpu_percent()
         vuelta = 0
         while True:
+            try:
+                self.telemetria_una(vuelta)
+            except Exception as e:            # que un fallo raro no deje a la placa "sin PC"
+                log("Telemetría:", e)
+            vuelta += 1
+            time.sleep(1)
+
+    def telemetria_una(self, vuelta: int):
+        if True:
             # "estoy vivo": el hook de permisos solo usa la placa si el companion está en marcha
             if self.s:
                 (CARPETA_ESTADO / "vivo").touch()
@@ -377,7 +398,6 @@ class Companion:
                     self.enviar(self.galaxia())
                 except Exception as e:
                     log("Galaxia:", e)
-            vuelta += 1
             ahora = datetime.datetime.now()
             bat = psutil.sensors_battery()
             _, temp_gpu = gpu()
@@ -394,7 +414,6 @@ class Companion:
                 "tapa": int(tapa_cerrada()),
                 "insomne": int(self.inhibidor is not None),
             })
-            time.sleep(1)
 
     # --- lo que llega de la placa ---
     def al_recibir(self, linea: bytes):
@@ -430,16 +449,18 @@ class Companion:
                     f"{'BAILANDO' if d.get('baila') else ''}")
         elif ev == "voz_ini":
             self.callar.set()                         # si estaba hablando, que se calle
-            self.audio = bytearray()
+            self.audio, self.grabacion = bytearray(), "pulsar"
             log("Escuchando...")
-        elif ev == "voz_fin":
-            audio = bytes(self.audio)
+        elif ev == "voz_fin" and self.grabacion == "pulsar":
+            audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_voz, args=(audio,), daemon=True).start()
-        elif ev == "voz_auto_ini":                    # la placa ha notado voz: ¿es "Oye Clawd"?
-            self.audio = bytearray()
-        elif ev == "voz_auto_fin":
-            audio = bytes(self.audio)
+        elif ev == "voz_auto_ini" and self.grabacion != "pulsar":   # ¿será "Oye Clawd"?
+            self.audio, self.grabacion = bytearray(), "auto"
+        elif ev == "voz_auto_fin" and self.grabacion == "auto":
+            audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev == "voz_auto_cancelar" and self.grabacion == "auto":
+            self.audio, self.grabacion = bytearray(), None
         elif ev and ev.startswith("idioma:"):        # Ajustes -> Idioma en la placa
             IDIOMA_UI["actual"] = ev[7:] if ev[7:] in I.IDIOMAS else "es"
             log("Idioma de la placa:", I.NOMBRE[IDIOMA_UI["actual"]])
@@ -449,7 +470,9 @@ class Companion:
                 self.callar.set()
         elif ev == "permiso":                       # has contestado un permiso en la placa
             r = CARPETA_ESTADO / "permisos" / f"{d.get('id')}.respuesta"
-            r.write_text(json.dumps({"ok": bool(d.get("ok"))}))
+            tmp = r.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"ok": bool(d.get("ok"))}))
+            os.replace(tmp, r)                          # de golpe: el hook nunca lo lee a medias
             log("Permiso", "CONCEDIDO" if d.get("ok") else "DENEGADO", "desde la placa")
         elif ev == "visto":                         # has tocado el aviso de "Claude ha acabado"
             self.aviso_pendiente = False
@@ -458,8 +481,7 @@ class Companion:
             self.audio = bytearray()
         elif ev == "cancelar":
             self.cancelar.set()
-            if self.proc and self.proc.poll() is None:
-                self.proc.terminate()
+            self.matar_claude()
             log("Cancelado desde la placa")
         elif ev == "arranque":
             log(f"La placa ha arrancado (motivo: {d.get('motivo')}, ultimo paso: {d.get('paso')})")
@@ -559,12 +581,18 @@ class Companion:
         segundos = len(audio) / 32000
         if not self.whisper or segundos < 0.5 or self.ocupado:
             return
-        texto = self.transcribir(audio, guardar=False, pista=False)   # sin pista: nada que "alucinar"
-        sin_voz, seguridad = self.confianza
+        if not self.lock_whisper.acquire(blocking=False):
+            return                                     # ya está transcribiendo algo: se descarta
+        try:
+            texto = self.transcribir(audio, guardar=False, pista=False)   # sin pista: nada que "alucinar"
+            sin_voz, seguridad = self.confianza
+            idioma = self.idioma
+        finally:
+            self.lock_whisper.release()
         if sin_voz > 0.5 or seguridad < -1.0:
             return                                     # ruido, o Whisper no está seguro: nada
         llano = solo_ascii(texto)
-        m = I.LLAMADAS.get(self.idioma, I.LLAMADAS["es"]).match(llano)   # la llamada de SU idioma
+        m = I.LLAMADAS.get(idioma, I.LLAMADAS["es"]).match(llano)   # la llamada de SU idioma
         if not m:
             return                                     # no era para Clawd: no se guarda nada
         resto = llano[m.end():].strip()
@@ -584,7 +612,8 @@ class Companion:
             self.enviar({"err": I.msg("cargando", IDIOMA_UI["actual"])})
             return
         t = time.time()
-        texto = self.transcribir(audio)
+        with self.lock_whisper:
+            texto = self.transcribir(audio)
         log(f"Entendido ({time.time() - t:.1f} s): {texto!r}")
         if not texto:
             self.enviar({"err": I.msg("no_entendido", self.idioma or IDIOMA_UI["actual"])})
@@ -594,13 +623,16 @@ class Companion:
     def procesar_texto(self, texto: str):
         if self.orden_local(texto):
             return
-        if self.ocupado:
+        with self.lock_claude:
+            ya_ocupado = self.ocupado
+            if not ya_ocupado:
+                self.ocupado = True                # para que la placa sepa que puede cancelar
+        if ya_ocupado:
             self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0})
             self.enviar({"err": I.msg("sigue", self.idioma or IDIOMA_UI["actual"])})
             return
         self.enviar({"oido": ascii_pantalla(texto), "cuenta": SEGUNDOS_PARA_CANCELAR})
         self.cancelar.clear()
-        self.ocupado = True                        # para que la placa sepa que puede cancelar
         if self.cancelar.wait(SEGUNDOS_PARA_CANCELAR):
             self.ocupado = False
             return
@@ -677,18 +709,42 @@ class Companion:
         if self.sesion:
             cmd += ["--resume", self.sesion]
         log("-> Claude:", texto)
+        self.voz_t = time.time()
         self.proc = subprocess.Popen(cmd, cwd=CARPETA_TRABAJO, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True)
+                                     stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        reloj = threading.Timer(15 * 60, self.matar_claude)    # como mucho 15 min
+        reloj.start()
+        resultado = None
+        try:
+            resultado = self.leer_claude()
+        finally:
+            reloj.cancel()
+            if self.proc and self.proc.poll() is None:
+                self.matar_claude()
+        self.terminar_claude(resultado)
+
+    def matar_claude(self):
+        """Parar claude -p y todo lo que haya lanzado (sus comandos)."""
+        p = self.proc
+        if p and p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except Exception:
+                p.kill()
+
+    def leer_claude(self):
         resultado = None
         for linea in self.proc.stdout:
             try:
                 ev = json.loads(linea)
             except Exception:
                 continue
+            if not isinstance(ev, dict):
+                continue
             if ev.get("session_id"):
                 self.sesion = ev["session_id"]
             if ev.get("type") == "assistant":
-                for c in ev["message"].get("content", []):
+                for c in (ev.get("message") or {}).get("content", []):
                     if c.get("type") == "tool_use":
                         paso = self.describir(c)
                         log("   ", paso)
@@ -696,6 +752,9 @@ class Companion:
             elif ev.get("type") == "result":
                 resultado = ev
         self.proc.wait()
+        return resultado
+
+    def terminar_claude(self, resultado):
         if self.sesion:
             self.f_sesion.write_text(self.sesion)
         if self.cancelar.is_set():
@@ -712,6 +771,7 @@ class Companion:
             self.enviar({"err": I.msg("problema", self.idioma or IDIOMA_UI["actual"])})
         respuesta = ascii_pantalla(resultado.get("result") or "")[:1500]
         log("<- Claude:", respuesta)
+        self.voz_t = time.time()
         if respuesta:
             self.enviar({"resp": respuesta})
             self.decir(respuesta)
@@ -719,19 +779,29 @@ class Companion:
     # --- permisos pedidos por el hook (hook_permiso.py), para contestarlos en la placa ---
     def vigilar_permisos(self):
         carpeta = CARPETA_ESTADO / "permisos"
-        ahora = {f.stem for f in carpeta.glob("*.json")} if carpeta.exists() else set()
-        for pid in ahora - self.permisos_enviados:
-            try:
-                p = json.loads((carpeta / f"{pid}.json").read_text())
-            except Exception:
-                continue
-            self.enviar({"permiso": {k: ascii_pantalla(str(v)) for k, v in p.items()}})
+        pendientes = sorted(carpeta.glob("*.json"), key=lambda f: f.stat().st_mtime) if carpeta.exists() else []
+        ids = {f.stem for f in pendientes}
+        for pid in self.permisos_enviados - ids:      # contestado, o has abierto la tapa
+            self.enviar({"permiso_fin": pid})
+        self.permisos_enviados &= ids
+        if not pendientes:
+            return
+        # la placa tiene sitio para uno: el más antiguo. Se reenvía cada 5 s por si la
+        # placa se ha reiniciado o se perdió (la placa ignora un id que ya tiene).
+        f = pendientes[0]
+        if f.stem in self.permisos_enviados and time.time() - self.permiso_ultimo_envio < 5:
+            return
+        try:
+            p = json.loads(f.read_text())
+        except Exception:
+            return                                     # a medio escribir: el siguiente segundo
+        self.enviar({"permiso": {k: ascii_pantalla(str(v)) for k, v in p.items()}})
+        self.permiso_ultimo_envio = time.time()
+        if f.stem not in self.permisos_enviados:
+            self.permisos_enviados.add(f.stem)
             log("Claude pide permiso:", p.get("herramienta"), p.get("detalle", "")[:60])
             ui = IDIOMA_UI["actual"]
             self.decir(I.msg("permiso_voz", ui, h=p.get("herramienta", "?")), ui)
-        for pid in self.permisos_enviados - ahora:     # contestado, o has abierto la tapa
-            self.enviar({"permiso_fin": pid})
-        self.permisos_enviados = ahora
 
     # --- no dormirse mientras Claude trabaja (aunque cierres la tapa) ---
     def mantener_despierto(self, si: bool):
@@ -764,14 +834,24 @@ class Companion:
                 if v.cambio_tareas:
                     self.enviar({"tareas": v.tareas_para_placa()})
                     v.cambio_tareas = False
-                # acaba de terminar: mandar su último mensaje y dejar el aviso pendiente
+                if estado == "trabajando" and self.estado_antes not in ("trabajando", "esperando"):
+                    self.trabajando_desde = time.time()
+                # Acaba de terminar. Regla de los avisos (KISS): solo si merece la pena saberlo
+                #  - algo LARGO (3 min o más) o con la tapa cerrada (no estás delante)
+                #  - y NO si se lo has preguntado por voz (la respuesta ya es el aviso)
                 if estado == "terminado" and self.estado_antes in ("trabajando", "esperando"):
-                    self.aviso_pendiente = True
-                    self.acabo_en = time.time()
+                    dur = time.time() - self.trabajando_desde
+                    por_voz = self.ocupado or time.time() - self.voz_t < 20
+                    importante = not por_voz and (dur >= 180 or tapa_cerrada())
                     self.enviar({"resumen": ascii_pantalla(v.ultimo_texto)[:400]})
-                    log("Claude ha terminado:", v.proyecto)
-                    ui = IDIOMA_UI["actual"]
-                    self.decir(I.msg("listo_voz", ui, p=v.proyecto or I.msg("tu_proyecto", ui)), ui)
+                    log(f"Claude ha terminado: {v.proyecto} ({dur:.0f} s)" + (" -> AVISO" if importante else ""))
+                    if importante:
+                        self.aviso_pendiente = True
+                        self.acabo_en = time.time()
+                        self.enviar({"aviso": "listo", "dur": int(dur)})
+                        if tapa_cerrada():                   # en voz alta, solo si no estás delante
+                            ui = IDIOMA_UI["actual"]
+                            self.decir(I.msg("listo_voz", ui, p=v.proyecto or I.msg("tu_proyecto", ui)), ui)
                 if estado == "trabajando":
                     self.aviso_pendiente = False
                 self.estado_antes = estado
@@ -800,7 +880,10 @@ class Companion:
                     while True:
                         resto += s.readline()         # puede llegar media línea: juntar
                         if resto.endswith(b"\n"):
-                            self.al_recibir(resto)
+                            try:
+                                self.al_recibir(resto)
+                            except Exception as e:   # base64 cortado, JSON raro...: se ignora
+                                log("Línea rara de la placa:", e)
                             resto = b""
             except (serial.SerialException, OSError):
                 self.s = None

@@ -127,8 +127,7 @@ float nivel_voz = 0;       // volumen mientras hablas (para la barrita)
 
 // Claude Code
 String claude_prev = "";
-uint32_t claude_desde = 0, prox_beep_espera = 0;
-int beeps_espera = 0;
+uint32_t claude_desde = 0;
 
 // pomodoro
 enum Pomo { POMO_NO, POMO_FOCO, POMO_DESCANSO };
@@ -210,11 +209,9 @@ const int MON_ACTS = 4;
 String mon_acts[MON_ACTS];                 // los últimos pasos (el más nuevo, el último)
 uint32_t claude_duro = 0, claude_fin = 0;  // cuánto tardó la última vez y cuándo acabó
 
-// ---------- El aviso grande: T("Claude ha terminado") / T("Claude te necesita") ----------
+// ---------- El aviso grande: "Claude ha terminado" / "Claude te necesita" ----------
 enum Alerta { AL_NO, AL_LISTO, AL_ESPERA, AL_TIEMPO };
 Alerta alerta = AL_NO;
-uint32_t prox_beep_alerta = 0;
-int beeps_alerta = 0;
 bool toque_aviso = false;                  // este dedo ha caído sobre el aviso
 
 // ---------- Permiso pedido por Claude Code (con la tapa cerrada) ----------
@@ -230,7 +227,8 @@ bool toque_permiso = false;
 //  CLAUDE:     Claude Code trabajando en el PC
 enum Voz { VOZ_NO, VOZ_ESCUCHA, VOZ_TRANSCRIBE, VOZ_CUENTA, VOZ_CLAUDE };
 Voz voz = VOZ_NO;
-bool voz_auto = false;     // escuchando tras T("Oye Clawd"): se para sola al callarte
+bool vad_activo = false;   // grabando un trozo para ver si dice "Oye Clawd"
+bool voz_auto = false;     // escuchando tras "Oye Clawd": se para sola al callarte
 uint32_t voz_ultimo_sonido = 0;
 uint32_t voz_desde = 0, cuenta_fin = 0, baila_hasta = 0;
 bool ptt_tactil = false;   // la grabación la empezó un dedo (y no el botón)
@@ -363,6 +361,7 @@ void voz_empezar(bool por_tactil) {
     return;
   }
   despertar(false);
+  if (vad_activo) { vad_activo = false; pc_enviar("voz_auto_cancelar"); }   // el trozo de "Oye Clawd", fuera
   SONAR(S_ESCUCHO);
   delay(80);                                // que el pitido no entre en la grabación
   grab_cola = grab_cab;                     // vaciar el búfer
@@ -419,31 +418,39 @@ int gal_n = 0;
 int gal_total = 0;
 uint32_t gal_desde = 0;     // cuándo se abrió la pantalla (para volver sola)
 
+// Cambiar el estado de la voz SIN pisar una grabación en curso (si no, al soltar
+// el dedo no se mandaría lo grabado y el micro se quedaría grabando para siempre)
+void poner_voz(Voz v) {
+  if (voz == VOZ_ESCUCHA) return;
+  voz = v;
+  voz_desde = millis();
+}
+
 // Mensajes del PC (los define pc.h, llegan como JSON)
 void al_mensaje(JsonDocument &doc) {
   if (doc["oido"].is<const char *>()) {           // lo que ha entendido Whisper
     term_add(doc["oido"].as<String>(), TXT2, "> ");
     int cuenta = doc["cuenta"] | 0;
-    voz = cuenta > 0 ? VOZ_CUENTA : VOZ_NO;
+    poner_voz(cuenta > 0 ? VOZ_CUENTA : VOZ_NO);
     cuenta_fin = millis() + cuenta * 1000;
     if (!(doc["mascota"] | 0)) pantalla = PANT_TERMINAL;   // las órdenes a Clawd se ven en él
   }
   if (doc["paso"].is<const char *>()) {           // Claude usa una herramienta
     term_add(doc["paso"].as<String>(), TXT3, "  └ ");
-    voz = VOZ_CLAUDE;
+    poner_voz(VOZ_CLAUDE);
   }
   if (doc["resp"].is<const char *>()) {           // la respuesta de Claude
     term_add(doc["resp"].as<String>(), TXT, "● ");
     term_add("", CREMA);
-    voz = VOZ_NO;
+    poner_voz(VOZ_NO);
   }
   if (doc["local"].is<const char *>()) {          // un comando que hace Clawd solo
     term_add(doc["local"].as<String>(), TXT2, "● ");
-    voz = VOZ_NO;
+    poner_voz(VOZ_NO);
   }
   if (doc["err"].is<const char *>()) {
     term_add(doc["err"].as<String>(), ROJO, "! ");
-    voz = VOZ_NO;
+    poner_voz(VOZ_NO);
     SONAR(S_ERROR);
   }
   if (doc["galaxia"].is<JsonArray>()) {           // notas por carpeta del vault
@@ -477,7 +484,19 @@ void al_mensaje(JsonDocument &doc) {
       rep_meter(m, len / 2);
   }
   if (doc["callar"].is<int>()) rep_callar();
-  if (doc["permiso"].is<JsonObject>()) {           // Claude pide permiso: contéstalo aquí
+  if (doc["aviso"].is<const char *>() && doc["aviso"].as<String>() == "listo") {   // algo largo ha acabado
+    claude_duro = (doc["dur"] | 0) * 1000UL;
+    claude_fin = millis();
+    if (alerta != AL_TIEMPO) alerta = AL_LISTO;   // no apagar una alarma que está sonando
+    despertar(false);
+    notificar(0, T("Claude ha terminado"), (mon_proyecto.length() ? mon_proyecto : String("Claude Code")) + " · " + duracion(claude_duro));
+    reaccionar(R_LISTO, 3500);
+    animar(A_CELEBRATE, ahora);
+    SONAR(S_LISTO);                                // una vez
+    soltar_confeti(cx, SUELO - 90, 30);
+  }
+  if (doc["permiso"].is<JsonObject>() &&
+      !(perm_activo && perm_id == doc["permiso"]["id"].as<String>())) {   // (el PC lo reenvía: si ya lo tengo, nada)
     JsonObject p = doc["permiso"];
     perm_id = p["id"] | "";
     perm_herr = p["herramienta"] | "";
@@ -701,12 +720,11 @@ void dibujar_indicador() {                  // puntitos en la barra: en qué pan
 
 // ---------- Ajustes de la cortina (se guardan en la placa) ----------
 bool habla_on = true;      // Clawd dice en voz alta las respuestas y los avisos
-bool oye_on = true;        // T("Oye Clawd"): escucha si le llamas
-bool carteles_on = true;   // los carteles de cada 50 min (beber agua...)
+bool oye_on = true;        // "Oye Clawd": escucha si le llamas
+bool carteles_on = false;  // los carteles de cada 50 min (beber agua...): apagados de serie
 int volumen = 70;          // % del altavoz
 
-// ---------- T("Oye Clawd"): la placa nota que hablas y le pasa el audio al PC ----------
-bool vad_activo = false;   // grabando un trozo para ver si dice T("Oye Clawd")
+// ---------- "Oye Clawd": la placa nota que hablas y le pasa el audio al PC ----------
 uint32_t vad_desde = 0, vad_ultimo_sonido = 0, vad_pausa_hasta = 0;
 
 // ---------- La cortina: se baja desde arriba, como en un móvil ----------
@@ -729,7 +747,7 @@ void notificar(uint8_t tipo, const String &titulo, const String &sub) {
   n_notifs = min(n_notifs + 1, MAX_NOTIFS);
 }
 
-// T("Habla") de verdad = encendido y sin T("No molestar"): se lo dice al PC
+// "Habla" de verdad = encendido y sin "No molestar": se lo dice al PC
 void enviar_habla() { pc_enviar(habla_on && !no_molestar ? "habla:1" : "habla:0"); }
 
 void poner_ajuste(const char *clave, bool &var, bool valor, const char *si, const char *no) {
@@ -927,7 +945,7 @@ void actualizar_voz() {
   if (voz == VOZ_ESCUCHA) {
     voz_mandar_trozos(false);
     if (ahora - voz_desde > VOZ_MAX_MS) voz_terminar();   // máximo 15 s
-    // tras T("Oye Clawd"), se para sola cuando te callas (1 s de silencio)
+    // tras "Oye Clawd", se para sola cuando te callas (1 s de silencio)
     if (voz_auto && ahora - voz_desde > 1500 && ahora - voz_ultimo_sonido > 1000) voz_terminar();
   }
   if (voz != VOZ_ESCUCHA) voz_auto = false;
@@ -937,7 +955,7 @@ void actualizar_voz() {
     term_add(T("El PC no ha contestado"), ROJO, "! ");
   }
   if (voz == VOZ_CUENTA && ahora > cuenta_fin + 3000 && !pc_claude_voz) voz = VOZ_NO;
-  if (voz == VOZ_CLAUDE && !pc_conectado()) voz = VOZ_NO;
+  if (voz == VOZ_CLAUDE && (!pc_conectado() || (!pc_claude_voz && ahora - voz_desde > 4000))) voz = VOZ_NO;
   if (voz != VOZ_NO || pc_claude_voz) { term_actividad = ahora; interaccion(); }
   // volver a la mascota tras 40 s sin nada nuevo en la terminal
   if (pantalla == PANT_TERMINAL && !tocaba && (int32_t)(ahora - term_actividad) > 40000) pantalla = PANT_MASCOTA;
@@ -949,7 +967,12 @@ void leer_micro() {
   float r = mic_pico;
   mic_pico = 0;
   if (ahora < 3000) return;                      // el micro tarda en estabilizarse
-  if (mic_mudo) { musica_desde = 0; bailando = ahora < baila_hasta; return; }
+  if (mic_mudo) {
+    musica_desde = 0;
+    bailando = ahora < baila_hasta;
+    if (vad_activo) { vad_activo = false; grabando = false; pc_enviar("voz_auto_cancelar"); }
+    return;
+  }
   if (voz == VOZ_ESCUCHA) {
     musica_desde = 0;
     nivel_voz += (r - nivel_voz) * 0.3f;
@@ -957,8 +980,8 @@ void leer_micro() {
     return;
   }
 
-  // T("Oye Clawd"): si nota voz, graba ese trozo (con el medio segundo de antes) y lo manda al PC.
-  // El PC lo pasa a texto y solo hace caso si empieza por T("Oye Clawd"); si no, lo tira.
+  // "Oye Clawd": si nota voz, graba ese trozo (con el medio segundo de antes) y lo manda al PC.
+  // El PC lo pasa a texto y solo hace caso si empieza por "Oye Clawd"; si no, lo tira.
   const float umbral_voz = max(110.0f, min(suelo_ruido, 30.0f) * 5);
   bool puede = oye_on && !mic_mudo && !no_molestar && voz == VOZ_NO && !bailando && !durmiendo &&
                pc_conectado() && rep_nivel == 0 && ahora > vad_pausa_hasta && pantalla != PANT_JUEGOS;
@@ -1026,11 +1049,7 @@ void leer_micro() {
 void leer_pc() {
   pc_actualizar();
   bool conectado = pc_conectado();
-  if (conectado && !pc_estaba) {
-    aviso(T("Conectado al PC"));
-    if (!durmiendo && reac == R_NADA) animar(A_WADDLE, ahora);   // entra andando de lado
-  }
-  if (!conectado && pc_estaba) aviso(T("PC desconectado"));
+  if (conectado && !pc_estaba && !durmiendo && reac == R_NADA) animar(A_WADDLE, ahora);   // entra andando de lado
   pc_estaba = conectado;
   if (conectado && !arranque_contado) {     // contarle al PC por qué hemos arrancado
     arranque_contado = true;
@@ -1041,34 +1060,18 @@ void leer_pc() {
     pc_enviar_linea(b);
   }
 
-  // Claude Code: detectar cambios de estado
+  // Claude Code: lo que hace se ve (Clawd, el puntito de la barra), pero NO suena.
+  // Los avisos de verdad los decide el PC y llegan como {"aviso":"listo"} (ver al_mensaje).
   String c = conectado ? pc_claude : "";
   if (c != claude_prev) {
     if (c == "trabajando" && claude_prev != "esperando") claude_desde = ahora;
-    if (c == "trabajando") { alerta = AL_NO; mon_resumen = ""; }
-    if (c == "esperando") { alerta = AL_ESPERA; notificar(1, T("Claude te necesita"), T("Pide permiso en la terminal")); }
+    if (c == "trabajando") { if (alerta == AL_LISTO) alerta = AL_NO; mon_resumen = ""; despertar(false); }
     // con la tapa cerrada, enseñar el progreso en cuanto empieza a trabajar
     if ((c == "trabajando" || c == "esperando") && pc_tapa && pantalla == PANT_MASCOTA) pantalla = PANT_CLAUDE;
-    if (c == "trabajando") despertar(false);
-    if (c == "esperando") {
-      despertar(false);
-      SONAR(S_ESPERA);
-      beeps_espera = 1;
-      prox_beep_espera = ahora + 45000;
-    }
     if (c == "terminado" && (claude_prev == "trabajando" || claude_prev == "esperando")) {
-      despertar(false);
-      alerta = AL_LISTO;                   // no se quita hasta que lo toques
       claude_duro = ahora - claude_desde;
-      notificar(0, T("Claude ha terminado"), (mon_proyecto.length() ? mon_proyecto : String("Claude Code")) + " · " + duracion(claude_duro));
       claude_fin = ahora;
-      beeps_alerta = 0;
-      prox_beep_alerta = ahora + 120000;
-      reaccionar(R_LISTO, 3500);
-      animar(A_CELEBRATE, ahora);
-      saltar(9);
-      SONAR(S_LISTO);
-      soltar_confeti(cx, SUELO - 90, 30);
+      if (!durmiendo) animar(A_CELEBRATE, ahora);   // una celebración pequeña y en silencio
     }
     claude_prev = c;
   }
@@ -1077,18 +1080,6 @@ void leer_pc() {
   static bool tapa_antes = false;
   if (pc_tapa && !tapa_antes && (c == "trabajando" || c == "esperando")) pantalla = PANT_CLAUDE;
   tapa_antes = pc_tapa;
-  // si no lo has visto, recordártelo cada 2 min (3 veces)
-  if (alerta == AL_LISTO && beeps_alerta < 3 && ahora > prox_beep_alerta) {
-    SONAR(S_LISTO);
-    beeps_alerta++;
-    prox_beep_alerta = ahora + 120000;
-  }
-  if (alerta == AL_ESPERA && c != "esperando") alerta = AL_NO;
-  if (c == "esperando" && beeps_espera < 3 && ahora > prox_beep_espera) {
-    SONAR(S_ESPERA);
-    beeps_espera++;
-    prox_beep_espera = ahora + 45000;
-  }
 }
 
 // ============================================================
@@ -1137,8 +1128,7 @@ void actualizar_tiempos() {
   if (!durmiendo && !claude_activo && pomo != POMO_FOCO && reac == R_NADA && recordatorio < 0 &&
       ahora - ultima_interaccion > paciencia) {
     durmiendo = true;
-    andando = false;
-    SONAR(S_DORMIR);
+    andando = false;                       // se duerme en silencio: no ha pasado nada que contar
   }
 }
 
@@ -1320,7 +1310,7 @@ void texto_panel(const String &txt, uint16_t col, const String &sub = "") {
   }
   if (corte < 0) corte = byte_de_letra(txt, letras(txt) / 2);   // sin espacios (chino): por la mitad
   g.drawString(txt.substring(0, corte), 120, PANEL_Y + 22);
-  g.drawString(txt.substring(corte + 1), 120, PANEL_Y + 40);
+  g.drawString(txt.substring(txt[corte] == ' ' ? corte + 1 : corte), 120, PANEL_Y + 40);
 }
 
 void fila_dato(const char *nombre, const String &valor, float frac, uint16_t col) {
@@ -2247,9 +2237,9 @@ void permiso_toque(int x, int y) {
 
 void dibujar_permiso() {
   if (!perm_activo) return;
-  if (ahora >= perm_prox_pitido && ahora - perm_desde < 3 * 60000) {   // te avisa (cada minuto, 3 veces)
+  if (perm_prox_pitido == 0) {                     // te avisa una vez, al llegar
     SONAR_SIEMPRE(S_ESPERA);
-    perm_prox_pitido = ahora + 60000;
+    perm_prox_pitido = 1;
   }
   oscurecer();
   float k = 0.5f + 0.5f * sinf(ahora / 380.0f);
@@ -2434,7 +2424,7 @@ void dibujar_ajustes() {
 void avisos_toque(int x, int y) {
   SONAR(S_CLIC);
   if (y < 64 && x > 190) { avisos_abierto = false; return; }                        // la X
-  if (y >= 278) { n_notifs = 0; avisos_abierto = false; aviso(T("Avisos borrados")); return; }   // T("Borrar todo")
+  if (y >= 278) { n_notifs = 0; avisos_abierto = false; aviso(T("Avisos borrados")); return; }   // "Borrar todo"
   if (y >= 70 && y < 70 + n_notifs * 34) {                                          // un aviso de Claude: ver el progreso
     if (notifs[(y - 70) / 34].tipo != 2) ir_a_pantalla_n(PANT_CLAUDE, 1);
     avisos_abierto = false;
@@ -2508,7 +2498,7 @@ void presentar() {
 
 // ============================================================
 void setup() {
-  Serial.setRxBufferSize(8192);   // las respuestas de Claude pueden ser largas
+  Serial.setRxBufferSize(16384);  // las respuestas de Claude y la voz de Clawd (ráfagas de ~13 KB)
   Serial.setTxBufferSize(8192);   // y la voz ocupa bastante
   Serial.begin(115200);
   pinMode(0, INPUT_PULLUP);       // botón BOOT
@@ -2521,7 +2511,7 @@ void setup() {
   no_molestar = ajustes.getBool("dnd", false);
   habla_on = ajustes.getBool("habla", true);
   oye_on = ajustes.getBool("oye", true);
-  carteles_on = ajustes.getBool("carteles", true);
+  carteles_on = ajustes.getBool("carteles", false);   // apagados de serie (KISS)
   idioma = (Idioma)constrain(ajustes.getUChar("idioma", ES), 0, 3);
   letras_para(idioma);
   motivo_arranque = esp_reset_reason();

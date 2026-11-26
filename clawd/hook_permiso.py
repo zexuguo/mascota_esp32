@@ -14,6 +14,7 @@ No contestar nada = Claude Code pregunta como siempre. Ante cualquier error,
 no contesta: este hook nunca debe bloquear a Claude.
 """
 import json
+import os
 import sys
 import time
 import uuid
@@ -71,12 +72,14 @@ def main():
     peticion = CARPETA / f"{pid}.json"
     respuesta = CARPETA / f"{pid}.respuesta"
     herramienta = datos.get("tool_name", "?")
-    peticion.write_text(json.dumps({
+    tmp = CARPETA / f"{pid}.tmp"
+    tmp.write_text(json.dumps({
         "id": pid,
         "herramienta": herramienta,
         "detalle": detalle(herramienta, datos.get("tool_input") or {})[:300],
         "proyecto": Path(datos.get("cwd") or "~").name,
     }, ensure_ascii=False))
+    os.replace(tmp, peticion)                     # de golpe: el companion nunca la lee a medias
     try:
         fin = time.time() + ESPERA_MAX
         while time.time() < fin:
@@ -87,8 +90,8 @@ def main():
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                                          "decision": decision}}))
                 return
-            if not tapa_cerrada():                # has abierto el portátil: a la terminal
-                return
+            if not tapa_cerrada() or not companion_vivo():   # portátil abierto o companion caído:
+                return                                         # a la terminal, como siempre
             time.sleep(0.5)
     finally:
         peticion.unlink(missing_ok=True)

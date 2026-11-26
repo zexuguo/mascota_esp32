@@ -1,7 +1,31 @@
-# Clawd — demo de mascota (hecha por Claude)
+# Clawd
 
-El cangrejito de Claude Code viviendo en la ESP32. Es una **demo para probar ideas**:
-úsala unos días, apunta qué te gusta y qué no, y luego hazla tú en `mascota/` con la guía.
+**El compañero de escritorio para trabajar con Claude Code.** Un cangrejito en una pantalla de
+2,8" que te deja apartarte del ordenador sin perderle la pista a Claude.
+
+- **Cierra el portátil y vete.** Claude sigue trabajando (no se suspende) y en Clawd ves en
+  qué va: tareas, pasos y tiempo.
+- **Contesta permisos desde la placa.** Con la tapa cerrada, lo que Claude quiera hacer sale
+  en la pantalla con *Permitir* / *Denegar*.
+- **Habla con él.** "Oye Clawd" (o *Hey* / *Ei* / *嘿*) y pregunta lo que quieras; te contesta
+  en voz alta, en tu idioma.
+- **Callado por defecto.** Solo avisa cuando algo largo termina o estando tú fuera. Nunca repite.
+
+Además: temporizador, pomodoro, juegos y la galaxia de tu vault. Todo en local (voz con
+Whisper y Piper), en español, inglés, chino y catalán.
+
+> Demo hecha por Claude para probar ideas: úsala unos días, apunta qué te gusta y qué no,
+> y luego hazla tú en `mascota/` con la guía.
+
+## Cuándo avisa (y cuándo no)
+| Situación | Qué hace |
+|---|---|
+| Claude responde algo corto | Nada (Clawd celebra en silencio y sale un punto verde en la barra) |
+| Le preguntas por voz | Solo te dice la respuesta |
+| Algo de **3 min o más** termina, o termina con la **tapa cerrada** | **Un** aviso con un sonido (la voz, solo con la tapa cerrada) |
+| Claude espera tu permiso con la tapa abierta | Punto amarillo y Clawd te saluda; sin sonido (lo ves en la terminal) |
+| Con la tapa cerrada pide permiso | La tarjeta de permiso, con un sonido |
+| Tu temporizador acaba | Alarma (es lo único que suena aunque esté en silencio) |
 
 ## Ponerlo en marcha
 El companion es un **servicio** (`clawd-companion`) que arranca solo al iniciar sesión.
