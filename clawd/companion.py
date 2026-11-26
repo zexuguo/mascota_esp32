@@ -260,6 +260,7 @@ class Companion:
         self.captura = bytearray()
         self.permisos_enviados: set[str] = set()
         self.permiso_ultimo_envio = 0.0
+        self.atascada_desde = 0.0            # desde cuándo la placa no lee (0 = lee bien)
         self.captura_pantalla = 0
         CARPETA_ESTADO.mkdir(parents=True, exist_ok=True)
         self.f_sesion = CARPETA_ESTADO / "sesion"
@@ -356,11 +357,11 @@ class Companion:
         try:
             with self.lock:
                 s.write((json.dumps(d) + "\n").encode())
-            self.atascada = False
+            self.atascada_desde = 0.0
         except serial.SerialTimeoutException:
-            if not getattr(self, "atascada", False):
-                log("La placa no lee lo que le mando: se ha colgado? (pulsa RESET)")
-            self.atascada = True
+            if not self.atascada_desde:
+                log("La placa no lee lo que le mando: si sigue así, la reinicio")
+                self.atascada_desde = time.time()
         except Exception:
             pass
 
@@ -388,7 +389,23 @@ class Companion:
             vuelta += 1
             time.sleep(1)
 
+    def reiniciar_placa(self):
+        """Reinicia la placa como hace esptool (RTS arriba y abajo, con DTR abajo para
+        que no entre en modo descarga). Pasa si se queda parada, p. ej. tras subir código."""
+        s = self.s
+        if not s:
+            return
+        log("La placa lleva 8 s sin leer: la reinicio")
+        with self.lock:
+            s.dtr = False
+            s.rts = True
+            time.sleep(0.1)
+            s.rts = False
+        self.atascada_desde = 0.0
+
     def telemetria_una(self, vuelta: int):
+        if self.atascada_desde and time.time() - self.atascada_desde > 8:
+            self.reiniciar_placa()
         if True:
             # "estoy vivo": el hook de permisos solo usa la placa si el companion está en marcha
             if self.s:
