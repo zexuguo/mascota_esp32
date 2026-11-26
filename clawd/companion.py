@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -18,7 +18,9 @@ Uso:   uv run companion.py           (puerto /dev/ttyACM0)
 La primera vez tarda: descarga Whisper (~500 MB).
 """
 import datetime
+import io
 import os
+import queue
 import signal
 import json
 import re
@@ -44,6 +46,8 @@ ESTADO_CLAUDE = Path.home() / ".local/state/zen-claude/estado.json"   # lo escri
 CARPETA_ESTADO = Path.home() / ".local/state/clawd"
 CARPETA_TRABAJO = Path.home()          # donde trabaja Claude Code por voz
 MODELO_WHISPER = "small"               # "base" = más rápido, "medium" = entiende mejor
+# La voz de Clawd (Piper, en local). Elegida comparando con Whisper: es la que mejor se entiende.
+VOZ_CLAWD = Path.home() / ".local/share/clawd/voces/es_ES-sharvard-medium.onnx"
 SEGUNDOS_PARA_CANCELAR = 3
 VAULT = Path.home() / "obsidian"       # para la pantalla de la galaxia
 MAX_ANILLOS = 12                       # la placa guarda como mucho 12 carpetas
@@ -263,11 +267,17 @@ class Companion:
         self.proc: subprocess.Popen | None = None
         self.whisper = None
         self.captura = bytearray()
+        self.permisos_enviados: set[str] = set()
         self.captura_pantalla = 0
         CARPETA_ESTADO.mkdir(parents=True, exist_ok=True)
         self.f_sesion = CARPETA_ESTADO / "sesion"
         self.sesion = self.f_sesion.read_text().strip() if self.f_sesion.exists() else None
         threading.Thread(target=self.cargar_whisper, daemon=True).start()
+        self.tts = None
+        self.hablar_on = True               # la placa lo cambia desde la cortina ("Habla")
+        self.cola_habla: queue.Queue[str] = queue.Queue()
+        self.callar = threading.Event()
+        threading.Thread(target=self.hablador, daemon=True).start()
         self.vigilante = Vigilante()
         self.inhibidor: subprocess.Popen | None = None   # "no te suspendas"
         self.aviso_pendiente = False         # Claude acabó y aún no lo has visto
@@ -282,6 +292,53 @@ class Companion:
             log("Whisper listo: ya puedes hablarle")
         except Exception as e:
             log("No se pudo cargar Whisper:", e)
+
+    # --- la voz de Clawd: Piper genera el audio y se manda a la placa en tiempo real ---
+    def decir(self, texto: str):
+        if self.hablar_on and texto.strip():
+            self.cola_habla.put(texto)
+
+    def hablador(self):
+        try:
+            from piper import PiperVoice
+            self.tts = PiperVoice.load(str(VOZ_CLAWD))
+            log("Voz de Clawd lista")
+        except Exception as e:
+            log("Sin voz (Piper):", e)
+            return
+        while True:
+            texto = self.cola_habla.get()
+            self.callar.clear()
+            # que pronuncie bien: "Clawd" lo leería como "clavos"; fuera rutas y símbolos
+            texto = re.sub(r"\bClawd\b", "Clod", texto)
+            texto = re.sub(r"[`*_#>|]", " ", texto)
+            try:
+                buf = io.BytesIO()
+                with wave.open(buf, "wb") as w:
+                    self.tts.synthesize_wav(texto[:600], w)
+                buf.seek(0)
+                with wave.open(buf) as w:
+                    sr = w.getframerate()
+                    x = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32)
+                # 22050 Hz -> 16000 Hz (lo que usa la placa) y volumen normalizado
+                x = np.interp(np.arange(0, len(x), sr / 16000), np.arange(len(x)), x)
+                pico = np.abs(x).max() or 1
+                pcm = (x * (0.7 * 32767 / pico)).astype("<i2").tobytes()
+            except Exception as e:
+                log("No he podido decirlo:", e)
+                continue
+            # mandar en trozos de 30 ms, a ritmo de tiempo real (con 0,3 s de ventaja)
+            trozo = 480 * 2
+            inicio = time.time()
+            for i in range(0, len(pcm), trozo):
+                if self.callar.is_set():
+                    self.enviar({"callar": 1})
+                    break
+                espera = inicio + (i / trozo) * 0.03 - 0.3 - time.time()
+                if espera > 0:
+                    time.sleep(espera)
+                from base64 import b64encode
+                self.enviar({"v": b64encode(pcm[i:i + trozo]).decode()})
 
     def enviar(self, d: dict):
         s = self.s
@@ -315,6 +372,9 @@ class Companion:
         psutil.cpu_percent()
         vuelta = 0
         while True:
+            # "estoy vivo": el hook de permisos solo usa la placa si el companion está en marcha
+            if self.s:
+                (CARPETA_ESTADO / "vivo").touch()
             if vuelta % 30 == 0:              # la galaxia, cada 30 s (y al empezar)
                 try:
                     self.enviar(self.galaxia())
@@ -372,11 +432,25 @@ class Companion:
                 log(f"micro  suelo={d['suelo']:5}  suave={d['suave']:5}  pico={d['pico']:6}  "
                     f"{'BAILANDO' if d.get('baila') else ''}")
         elif ev == "voz_ini":
+            self.callar.set()                         # si estaba hablando, que se calle
             self.audio = bytearray()
             log("Escuchando...")
         elif ev == "voz_fin":
             audio = bytes(self.audio)
             threading.Thread(target=self.procesar_voz, args=(audio,), daemon=True).start()
+        elif ev == "voz_auto_ini":                    # la placa ha notado voz: ¿es "Oye Clawd"?
+            self.audio = bytearray()
+        elif ev == "voz_auto_fin":
+            audio = bytes(self.audio)
+            threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev in ("habla:1", "habla:0"):          # interruptor "Habla" de la cortina
+            self.hablar_on = ev == "habla:1"
+            if not self.hablar_on:
+                self.callar.set()
+        elif ev == "permiso":                       # has contestado un permiso en la placa
+            r = CARPETA_ESTADO / "permisos" / f"{d.get('id')}.respuesta"
+            r.write_text(json.dumps({"ok": bool(d.get("ok"))}))
+            log("Permiso", "CONCEDIDO" if d.get("ok") else "DENEGADO", "desde la placa")
         elif ev == "visto":                         # has tocado el aviso de "Claude ha acabado"
             self.aviso_pendiente = False
             log("Aviso visto en la placa")
@@ -389,6 +463,8 @@ class Companion:
             log("Cancelado desde la placa")
         elif ev == "arranque":
             log(f"La placa ha arrancado (motivo: {d.get('motivo')}, ultimo paso: {d.get('paso')})")
+            if "habla" in d:
+                self.hablar_on = bool(d["habla"])
         elif ev:
             log("Clawd:", ev)
 
@@ -431,21 +507,42 @@ class Companion:
                 self.enviar(p["enviar"])
             if "esperar" in p:
                 time.sleep(float(p["esperar"]))
+            if "decir" in p:
+                self.decir(p["decir"])
 
     # --- voz -> texto ---
-    def transcribir(self, audio: bytes) -> str:
+    def transcribir(self, audio: bytes, guardar: bool = True) -> str:
         muestras = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768
         muestras -= muestras.mean()
         pico = np.abs(muestras).max()
         if pico > 0:
             muestras *= 0.9 / pico                     # el micro es flojito: subir volumen
-        with wave.open(str(CARPETA_ESTADO / "ultima_voz.wav"), "wb") as w:   # para depurar
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-            w.writeframes((muestras * 32767).astype(np.int16).tobytes())
+        if guardar:   # para depurar (se sobrescribe); lo de "Oye Clawd" no se guarda nunca
+            with wave.open(str(CARPETA_ESTADO / "ultima_voz.wav"), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+                w.writeframes((muestras * 32767).astype(np.int16).tobytes())
         segs, _ = self.whisper.transcribe(
             muestras, language="es", vad_filter=True,
-            initial_prompt="Clawd, Claude, pomodoro, archivo, carpeta, proyecto, commit.")
+            initial_prompt="Oye Clawd. Claude, pomodoro, temporizador, archivo, carpeta, proyecto, commit.")
         return " ".join(s.text for s in segs).strip()
+
+    # --- "Oye Clawd": solo se hace caso si empieza por la llamada; si no, se tira ---
+    LLAMADA = re.compile(r"^\s*(oye|hey|ey|eh|hola|vale)?[\s,]*(clawd|claude|clod|cloud|clau|claud|clow|glod)\b[\s,.!?]*", re.I)
+
+    def procesar_llamada(self, audio: bytes):
+        segundos = len(audio) / 32000
+        if not self.whisper or segundos < 0.5 or self.ocupado:
+            return
+        texto = self.transcribir(audio, guardar=False)
+        m = self.LLAMADA.match(solo_ascii(texto))
+        if not m:
+            return                                     # no era para Clawd: no se guarda nada
+        resto = texto[m.end():].strip() if len(texto) == len(solo_ascii(texto)) else solo_ascii(texto)[m.end():].strip()
+        log(f"Oye Clawd ({segundos:.1f} s): {texto!r}")
+        if len(resto) < 3:
+            self.enviar({"cmd": "escuchar"})          # solo te ha llamado: ahora escucha lo que digas
+        else:
+            self.procesar_texto(resto)
 
     def procesar_voz(self, audio: bytes):
         segundos = len(audio) / 32000
@@ -462,6 +559,9 @@ class Companion:
         if not texto:
             self.enviar({"err": "No te he entendido"})
             return
+        self.procesar_texto(texto)
+
+    def procesar_texto(self, texto: str):
         if self.orden_local(texto):
             return
         if self.ocupado:
@@ -529,6 +629,7 @@ class Companion:
                 self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0, "mascota": 1})
                 self.enviar({"cmd": cmd})
                 self.enviar({"local": respuesta})
+                self.decir(respuesta)
                 log("Orden para Clawd:", cmd)
                 return True
         if re.search(r"\bque hora es\b", t):
@@ -605,6 +706,23 @@ class Companion:
         log("<- Claude:", respuesta)
         if respuesta:
             self.enviar({"resp": respuesta})
+            self.decir(respuesta)
+
+    # --- permisos pedidos por el hook (hook_permiso.py), para contestarlos en la placa ---
+    def vigilar_permisos(self):
+        carpeta = CARPETA_ESTADO / "permisos"
+        ahora = {f.stem for f in carpeta.glob("*.json")} if carpeta.exists() else set()
+        for pid in ahora - self.permisos_enviados:
+            try:
+                p = json.loads((carpeta / f"{pid}.json").read_text())
+            except Exception:
+                continue
+            self.enviar({"permiso": {k: ascii_pantalla(str(v)) for k, v in p.items()}})
+            log("Claude pide permiso:", p.get("herramienta"), p.get("detalle", "")[:60])
+            self.decir(f"Claude necesita permiso para usar {p.get('herramienta', 'una herramienta')}.")
+        for pid in self.permisos_enviados - ahora:     # contestado, o has abierto la tapa
+            self.enviar({"permiso_fin": pid})
+        self.permisos_enviados = ahora
 
     # --- no dormirse mientras Claude trabaja (aunque cierres la tapa) ---
     def mantener_despierto(self, si: bool):
@@ -626,6 +744,7 @@ class Companion:
             try:
                 estado = estado_claude()
                 self.ejecutar_ordenes()
+                self.vigilar_permisos()
                 v = self.vigilante
                 v.leer()
                 if v.proyecto:
@@ -642,6 +761,7 @@ class Companion:
                     self.acabo_en = time.time()
                     self.enviar({"resumen": ascii_pantalla(v.ultimo_texto)[:400]})
                     log("Claude ha terminado:", v.proyecto)
+                    self.decir(f"Listo. Claude ha terminado en {v.proyecto or 'tu proyecto'}.")
                 if estado == "trabajando":
                     self.aviso_pendiente = False
                 self.estado_antes = estado

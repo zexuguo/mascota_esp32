@@ -23,6 +23,7 @@ struct Nota {
 QueueHandle_t cola_sonido;
 volatile float mic_pico = 0;
 volatile bool audio_mudo = false;
+volatile bool no_molestar = false;      // como en el móvil: solo suenan alarmas y permisos
 volatile uint32_t ignorar_mic_hasta = 0;
 volatile bool mic_mudo = false;         // micro apagado: ni escucha ni graba
 
@@ -33,6 +34,37 @@ volatile bool grabando = false;
 const uint32_t GRAB_N = 16384;            // ~1 s de margen
 int16_t grab_buf[GRAB_N];
 volatile uint32_t grab_cab = 0, grab_cola = 0;
+
+// Reproducción de voz (lo que dice Clawd): el PC manda trozos y la tarea los toca.
+// Búfer circular en la PSRAM: 3 s de audio mono a 16 kHz.
+const uint32_t REP_N = 48000;
+int16_t *rep_buf = nullptr;
+volatile uint32_t rep_cab = 0, rep_cola = 0;
+volatile float rep_nivel = 0;            // lo fuerte que suena ahora (para que Clawd "hable")
+volatile uint32_t rep_ultimo = 0;        // cuándo sonó el último trozo
+
+uint32_t rep_hay() { return rep_cab - rep_cola; }
+bool rep_meter(const int16_t *m, int n) {
+  if (!rep_buf || rep_hay() + n > REP_N) return false;   // lleno: se pierde ese trozo
+  for (int i = 0; i < n; i++) rep_buf[(rep_cab + i) % REP_N] = m[i];
+  rep_cab += n;
+  return true;
+}
+void rep_callar() { rep_cola = rep_cab; rep_nivel = 0; }
+
+// Medio segundo "de antes": se guarda siempre, para que "Oye Clawd" no pierda
+// el principio de lo que dices (cuando la placa nota la voz, ya ha empezado).
+const uint32_t PRE_N = 8000;
+int16_t pre_buf[PRE_N];
+volatile uint32_t pre_cab = 0;
+
+void grab_con_previo() {                 // empezar a grabar con el medio segundo de antes
+  uint32_t n = min((uint32_t)pre_cab, PRE_N);
+  grab_cola = grab_cab;
+  for (uint32_t i = 0; i < n; i++) grab_buf[(grab_cab + i) % GRAB_N] = pre_buf[(pre_cab - n + i) % PRE_N];
+  grab_cab += n;
+  grabando = true;
+}
 
 int grab_sacar(int16_t *dst, int max) {
   uint32_t hay = grab_cab - grab_cola;
@@ -45,9 +77,13 @@ int grab_sacar(int16_t *dst, int max) {
 #define SONAR(arr) sonar(arr, sizeof(arr) / sizeof(arr[0]))
 
 void sonar(const Nota *notas, int n) {
-  if (audio_mudo || !cola_sonido) return;
+  if (audio_mudo || no_molestar || !cola_sonido) return;
   for (int i = 0; i < n; i++) xQueueSend(cola_sonido, &notas[i], 0);
 }
+
+static void codec_escribir(uint8_t reg, uint8_t valor);
+// volumen 0..100 % -> registro 0x32 del ES8311 (0 = mudo; ~0xBF = máximo limpio)
+void audio_volumen(int pct) { codec_escribir(0x32, pct <= 0 ? 0 : 0x70 + (0xBF - 0x70) * pct / 100); }
 
 static void codec_escribir(uint8_t reg, uint8_t valor) {
   Wire.beginTransmission(ES8311_ADDR);
@@ -82,6 +118,7 @@ static void tocar(const Nota &n) {
 
 static void tarea_audio(void *) {
   static int16_t mbuf[128 * 2];
+  static int16_t vbuf[256 * 2];
   Nota n;
   for (;;) {
     if (xQueueReceive(cola_sonido, &n, 0) == pdTRUE) {
@@ -89,9 +126,29 @@ static void tarea_audio(void *) {
       ignorar_mic_hasta = millis() + 250;   // que no se asuste de sí mismo
       continue;
     }
+    if (rep_hay() >= 256 || (rep_hay() > 0 && millis() - rep_ultimo > 120)) {   // hay voz que decir
+      int k = min((uint32_t)256, rep_hay());
+      double acc = 0;
+      for (int i = 0; i < k; i++) {
+        int16_t v = rep_buf[(rep_cola + i) % REP_N];
+        vbuf[2 * i] = vbuf[2 * i + 1] = v;
+        acc += (double)v * v;
+      }
+      rep_cola += k;
+      rep_nivel = sqrt(acc / k);
+      rep_ultimo = millis();
+      i2s.write((uint8_t *)vbuf, k * 4);
+      ignorar_mic_hasta = millis() + 250;
+      continue;
+    }
+    if (millis() - rep_ultimo > 200) rep_nivel = 0;
     size_t muestras = i2s.readBytes((char *)mbuf, sizeof(mbuf)) / 2;
     if (muestras == 0) { vTaskDelay(1); continue; }
     if (mic_mudo) continue;               // se lee igual (para vaciar), pero se tira
+    if (!grabando) {                      // lo de antes, por si hace falta
+      for (size_t j = 0; j + 1 < muestras; j += 2)
+        pre_buf[pre_cab++ % PRE_N] = (int16_t)(((int32_t)mbuf[j] + mbuf[j + 1]) / 2);
+    }
     if (grabando) {
       for (size_t j = 0; j + 1 < muestras; j += 2) {   // estéreo -> mono
         if (grab_cab - grab_cola >= GRAB_N) break;     // lleno: perder antes que bloquear
@@ -150,6 +207,7 @@ bool audio_iniciar() {
   i2s.setTimeout(20);
 
   cola_sonido = xQueueCreate(40, sizeof(Nota));
+  rep_buf = (int16_t *)ps_malloc(REP_N * sizeof(int16_t));
   xTaskCreatePinnedToCore(tarea_audio, "audio", 4096, nullptr, 2, nullptr, 0);
   return true;
 }
@@ -169,4 +227,5 @@ const Nota S_RECORDAR[]  = {{988, 988, 100, 60, 1}, {1319, 1319, 180, 60, 1}};
 const Nota S_CLIC[]      = {{1200, 1200, 25, 18, 0}};
 const Nota S_ESCUCHO[]   = {{880, 1320, 70, 50, 1}};
 const Nota S_OIDO[]      = {{1320, 880, 70, 50, 1}};
+const Nota S_TIC[]       = {{2600, 2600, 6, 22, 0}};   // el "clic" de las ruedas
 const Nota S_ERROR[]     = {{300, 200, 200, 60, 1}};

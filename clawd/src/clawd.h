@@ -335,10 +335,10 @@ const char *const SPIN_1[] = {"..X..", ".....", "X.X.X", ".....", "..X.."};   //
 const char *const SPIN_2[] = {"X.X.X", ".XXX.", "XXXXX", ".XXX.", "X.X.X"};   // ✳
 const char *const SPIN_3[] = {"..X..", ".XXX.", "XXXXX", ".XXX.", "..X.."};   // ✶
 const char *const SPIN_4[] = {"X.X.X", ".XXX.", "XX.XX", ".XXX.", "X.X.X"};   // ✻
-const char *const SPIN_5[] = {".X.X.", "XXXXX", ".X.X.", "XXXXX", ".X.X."};   // ✽
+const char *const SPIN_5[] = {"X...X", ".X.X.", "..X..", ".X.X.", "X...X"};   // ✽ (a 5x5 parecía una "#")
 // (cx, cy) = centro en px de pantalla; p = tamaño del píxel
 void dibujar_spinner(LGFX_Sprite &g, int cx, int cy, uint32_t t, uint16_t col, int p = L) {
-  const char *const *fr[] = {SPIN_0, SPIN_1, SPIN_2, SPIN_3, SPIN_4, SPIN_5, SPIN_4, SPIN_3, SPIN_2, SPIN_1};
+  const char *const *fr[] = {SPIN_0, SPIN_1, SPIN_3, SPIN_2, SPIN_4, SPIN_2, SPIN_3, SPIN_1, SPIN_0, SPIN_0};
   patron(g, fr[(t / 120) % 10], 5, cx - 2 * p, cy - 2 * p, p, col);
 }
 

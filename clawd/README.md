@@ -20,7 +20,7 @@ systemctl --user restart clawd-companion    # reiniciarlo (p. ej. tras cambiar c
 | Dejar el dedo quieto encima (0,6 s) | Mimos: ojos ^ ^, colorete y se achucha |
 | Doble toque | Empieza un pomodoro de 25 min (cinta roja). Otro doble toque lo cancela |
 | Tocar el suelo | Va andando hasta allí |
-| **Bajar la cortina** (desliza hacia abajo desde arriba; en la mascota, desde cualquier sitio) | Como en el móvil: hora, interruptores (Sonido, Micro, Pomodoro, Dormir), brillo, último aviso y accesos a las 5 pantallas |
+| **Bajar la cortina** (desliza hacia abajo desde arriba; en la mascota, desde cualquier sitio) | Como en el móvil: 8 interruptores (Sonido, Micro, No molestar, Dormir, Tiempo, Oye Clawd, Habla, Carteles), brillo, volumen, avisos (tócalos: la lista entera) y accesos a las 5 pantallas |
 | Tocar el panel de abajo | Cambia la información (CPU, RAM, batería) |
 | Dar una palmada | Se asusta |
 | Poner música (3 s) | Baila, con notas y el LED en arcoíris |
@@ -112,3 +112,21 @@ Cortina → **Temporiz.**, o por voz: "pon un temporizador de diez minutos", "av
 "cancela el temporizador". El tiempo se elige con una **rueda**, como el selector de hora de Android: primero las **horas** (0-11) y, al soltar, los **minutos** (0-59). El tirador va siempre a donde está el dedo, con un "tic" en cada muesca. Tocando las horas o los minutos del centro vuelves a cada paso. Pausar / seguir / cancelar, y el **Pomodoro** dentro.
 Lo que queda se ve en la barra de arriba. Al acabar: aviso "TIEMPO", LED y alarma — **suena aunque el sonido
 esté en silencio** (un temporizador que no suena no sirve), como mucho 1 minuto. Tócalo para pararla.
+
+## "Oye Clawd" y la voz de Clawd
+- **Oye Clawd** (cortina): la placa solo manda audio al PC cuando nota voz (punto verde en la barra mientras lo hace).
+  El PC lo pasa a texto en local y **solo hace caso si empieza por "Oye Clawd"** (o "Clawd" / "Claude");
+  si no, lo tira sin guardarlo. "Oye Clawd, pon un temporizador de 5 minutos" lo hace directamente;
+  "Oye Clawd" a secas: te escucha y se para sola cuando te callas. No escucha con "No molestar", música o en los juegos.
+- **Habla** (cortina): Clawd dice en voz alta las respuestas de Claude, cuando termina y cuando pide permiso.
+  Voz **Piper `es_ES-sharvard-medium`** (en local, `~/.local/share/clawd/voces/`), elegida comparando con Whisper.
+  El PC la genera y la manda a la placa en tiempo real (trozos de 30 ms).
+- **No molestar**: solo suenan la alarma del temporizador y los permisos; sin carteles, sin voz y sin "Oye Clawd".
+
+## Permisos de Claude Code desde la placa
+Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (copia de antes: `settings.json.bak-clawd-permisos`).
+- **Tapa cerrada, sin monitor externo y con el companion en marcha**: la petición sale en la placa
+  (herramienta, proyecto y el comando exacto) con **Denegar / Permitir**.
+- Tapa abierta (o con monitor externo): no hace nada y te sale el diálogo normal. Si abres la tapa mientras
+  espera, vuelve al diálogo normal. Ante cualquier fallo, no decide nada (nunca bloquea a Claude).
+- Quitarlo: borrar la entrada `PermissionRequest` de `~/.claude/settings.json`.
