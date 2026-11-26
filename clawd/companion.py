@@ -38,6 +38,9 @@ import numpy as np
 import psutil
 import serial
 
+import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
+IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
+
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 PUERTO = ARGS[0] if ARGS else "/dev/ttyACM0"
 VER_MIC = "--mic" in sys.argv
@@ -46,14 +49,10 @@ ESTADO_CLAUDE = Path.home() / ".local/state/zen-claude/estado.json"   # lo escri
 CARPETA_ESTADO = Path.home() / ".local/state/clawd"
 CARPETA_TRABAJO = Path.home()          # donde trabaja Claude Code por voz
 MODELO_WHISPER = "small"               # "base" = más rápido, "medium" = entiende mejor
-# La voz de Clawd (Piper, en local). Elegida comparando con Whisper: es la que mejor se entiende.
-VOZ_CLAWD = Path.home() / ".local/share/clawd/voces/es_ES-sharvard-medium.onnx"
 SEGUNDOS_PARA_CANCELAR = 3
 VAULT = Path.home() / "obsidian"       # para la pantalla de la galaxia
 MAX_ANILLOS = 12                       # la placa guarda como mucho 12 carpetas
 
-DIAS = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"]
-MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 HAY_NVIDIA = shutil.which("nvidia-smi") is not None
 
 # Permisos de Claude por voz: TODOS (lo pidió zexu el 2026-11-26).
@@ -64,7 +63,8 @@ HAY_NVIDIA = shutil.which("nvidia-smi") is not None
 MODO_PERMISOS = "bypassPermissions"
 INSTRUCCIONES = (
     "Te habla zexu por voz a través de Clawd, una mascota con una pantalla "
-    "diminuta de 32 columnas. Responde en español y MUY breve: 1-3 frases, "
+    "diminuta de 32 columnas. Responde en el mismo idioma en que te hable (español, inglés, "
+    "chino simplificado o catalán). MUY breve: 1-3 frases, "
     "sin markdown, sin tablas, sin listas largas, sin emojis. Lo que te dice "
     "viene de un reconocimiento de voz y puede tener errores: si algo no tiene "
     "sentido o es ambiguo, pregunta en vez de adivinar. Tienes todos los permisos: "
@@ -84,7 +84,13 @@ def ascii_pantalla(texto: str) -> str:
         texto = texto.replace(a, b)
     texto = re.sub(r"[*_`#]+", "", texto)
     permitidos = set("…·●└")
-    texto = "".join(c for c in texto if c == "\n" or 32 <= ord(c) < 0x180 or c in permitidos)
+    def vale(c: str) -> bool:
+        o = ord(c)
+        return (c == "\n" or 32 <= o < 0x180 or c in permitidos
+                or 0x3000 <= o < 0x3040      # signos chinos: 。，、「」
+                or 0x4E00 <= o < 0xA000      # caracteres chinos
+                or 0xFF00 <= o < 0xFFF0)     # signos de ancho completo: ！？：
+    texto = "".join(c for c in texto if vale(c))
     return re.sub(r"\n{3,}", "\n\n", texto).strip()
 
 
@@ -94,37 +100,9 @@ def solo_ascii(texto: str) -> str:
 
 
 def normalizar(texto: str) -> str:
+    """minúsculas, sin tildes ni signos; el chino se queda tal cual"""
     t = solo_ascii(ascii_pantalla(texto)).lower()
-    return re.sub(r"[^a-z0-9 ]", " ", t)
-
-
-# ---------------------------------------------------------------- temporizador por voz
-NUMEROS = {"un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
-           "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12, "quince": 15,
-           "veinte": 20, "veinticinco": 25, "treinta": 30, "cuarenta": 40, "cuarenta y cinco": 45,
-           "cincuenta": 50, "noventa": 90}
-
-
-def segundos_de(t: str):
-    """'diez minutos' -> 600, 'media hora' -> 1800, '1 hora y 15 minutos' -> 4500. None si no hay tiempo."""
-    if "media hora" in t:
-        return 1800 + segundos_de(t.replace("media hora", "")) if re.search(r"\d|minut", t.replace("media hora", "")) else 1800
-    total, encontrado = 0, False
-    for unidad, factor in (("hora", 3600), ("minut", 60), ("segund", 1)):
-        m = re.search(r"(\d+|" + "|".join(sorted(NUMEROS, key=len, reverse=True)) + r")\s+" + unidad, t)
-        if m:
-            n = m.group(1)
-            total += (int(n) if n.isdigit() else NUMEROS[n]) * factor
-            encontrado = True
-    return total if encontrado else None
-
-
-def duracion_texto(s: int) -> str:
-    if s % 3600 == 0:
-        return f"{s // 3600} h"
-    if s >= 60:
-        return f"{s // 60} min" + (f" {s % 60} s" if s % 60 else "")
-    return f"{s} s"
+    return re.sub(r"[^a-z0-9 \u4e00-\u9fff]", " ", t)
 
 
 # ---------------------------------------------------------------- datos del PC
@@ -266,6 +244,7 @@ class Companion:
         self.cancelar = threading.Event()
         self.proc: subprocess.Popen | None = None
         self.whisper = None
+        self.idioma = "es"                    # el de la última frase (es o zh)
         self.captura = bytearray()
         self.permisos_enviados: set[str] = set()
         self.captura_pantalla = 0
@@ -294,28 +273,40 @@ class Companion:
             log("No se pudo cargar Whisper:", e)
 
     # --- la voz de Clawd: Piper genera el audio y se manda a la placa en tiempo real ---
-    def decir(self, texto: str):
+    def decir(self, texto: str, idioma: str | None = None):
+        """Decirlo en voz alta. Idioma: el que se diga, o chino si hay caracteres chinos,
+        o el de la última frase que le has dicho, o el de la placa."""
         if self.hablar_on and texto.strip():
-            self.cola_habla.put(texto)
+            idioma = I.idioma_de_texto(texto, idioma or self.idioma or IDIOMA_UI["actual"])
+            self.cola_habla.put((texto, idioma if idioma in I.IDIOMAS else "es"))
+
+    def voz(self, idioma: str):
+        """La voz de Piper de ese idioma (se carga la primera vez que hace falta)."""
+        if idioma not in self.voces:
+            from piper import PiperVoice
+            f = I.CARPETA_VOCES / f"{I.VOCES[idioma]}.onnx"
+            self.voces[idioma] = PiperVoice.load(str(f)) if f.exists() else None
+            log(f"Voz {idioma}:", "lista" if self.voces[idioma] else f"falta {f.name}")
+        return self.voces[idioma] or self.voces.get("es")
 
     def hablador(self):
+        self.voces = {}
         try:
-            from piper import PiperVoice
-            self.tts = PiperVoice.load(str(VOZ_CLAWD))
-            log("Voz de Clawd lista")
+            self.voz("es")
         except Exception as e:
             log("Sin voz (Piper):", e)
             return
         while True:
-            texto = self.cola_habla.get()
+            texto, idioma = self.cola_habla.get()
             self.callar.clear()
             # que pronuncie bien: "Clawd" lo leería como "clavos"; fuera rutas y símbolos
-            texto = re.sub(r"\bClawd\b", "Clod", texto)
+            texto = I.para_decir(texto, idioma)    # "Claude" -> como se pronuncia en ese idioma
             texto = re.sub(r"[`*_#>|]", " ", texto)
             try:
+                tts = self.voz(idioma)
                 buf = io.BytesIO()
                 with wave.open(buf, "wb") as w:
-                    self.tts.synthesize_wav(texto[:600], w)
+                    tts.synthesize_wav(texto[:600], w)
                 buf.seek(0)
                 with wave.open(buf) as w:
                     sr = w.getframerate()
@@ -391,7 +382,7 @@ class Companion:
                 "bat": round(bat.percent) if bat else -1,
                 "carga": int(bat.power_plugged) if bat else 1,
                 "h": ahora.hour, "m": ahora.minute, "s": ahora.second,
-                "dia": f"{DIAS[ahora.weekday()]} {ahora.day} {MESES[ahora.month - 1]}",
+                "dia": I.fecha(IDIOMA_UI["actual"], ahora),
                 "claude": estado_claude(),
                 "voz": int(self.ocupado),
                 "tapa": int(tapa_cerrada()),
@@ -443,6 +434,9 @@ class Companion:
         elif ev == "voz_auto_fin":
             audio = bytes(self.audio)
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev and ev.startswith("idioma:"):        # Ajustes -> Idioma en la placa
+            IDIOMA_UI["actual"] = ev[7:] if ev[7:] in I.IDIOMAS else "es"
+            log("Idioma de la placa:", I.NOMBRE[IDIOMA_UI["actual"]])
         elif ev in ("habla:1", "habla:0"):          # interruptor "Habla" de la cortina
             self.hablar_on = ev == "habla:1"
             if not self.hablar_on:
@@ -465,6 +459,8 @@ class Companion:
             log(f"La placa ha arrancado (motivo: {d.get('motivo')}, ultimo paso: {d.get('paso')})")
             if "habla" in d:
                 self.hablar_on = bool(d["habla"])
+            if d.get("idioma") in I.IDIOMAS:
+                IDIOMA_UI["actual"] = d["idioma"]
         elif ev:
             log("Clawd:", ev)
 
@@ -521,23 +517,32 @@ class Companion:
             with wave.open(str(CARPETA_ESTADO / "ultima_voz.wav"), "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
                 w.writeframes((muestras * 32767).astype(np.int16).tobytes())
-        segs, _ = self.whisper.transcribe(
-            muestras, language="es", vad_filter=True,
-            initial_prompt="Oye Clawd. Claude, pomodoro, temporizador, archivo, carpeta, proyecto, commit.")
+        # Idioma: lo detecta Whisper. Valen español, inglés, chino y catalán; si cree que es
+        # otro (pasa con frases muy cortas), se repite en el idioma elegido en la placa.
+        ui = IDIOMA_UI["actual"]
+        opciones = dict(vad_filter=True, initial_prompt=I.PISTA[ui])
+        segs, info = self.whisper.transcribe(muestras, language=None, **opciones)
+        if info.language not in I.IDIOMAS:
+            segs, info = self.whisper.transcribe(muestras, language=ui, **opciones)
+        self.idioma = info.language
+        if info.language != ui:
+            log("Idioma detectado:", I.NOMBRE[info.language])
+        if info.language == "zh":
+            return "".join(s.text for s in segs).strip()   # el chino no separa con espacios
         return " ".join(s.text for s in segs).strip()
 
     # --- "Oye Clawd": solo se hace caso si empieza por la llamada; si no, se tira ---
-    LLAMADA = re.compile(r"^\s*(oye|hey|ey|eh|hola|vale)?[\s,]*(clawd|claude|clod|cloud|clau|claud|clow|glod)\b[\s,.!?]*", re.I)
 
     def procesar_llamada(self, audio: bytes):
         segundos = len(audio) / 32000
         if not self.whisper or segundos < 0.5 or self.ocupado:
             return
         texto = self.transcribir(audio, guardar=False)
-        m = self.LLAMADA.match(solo_ascii(texto))
+        llano = solo_ascii(texto)
+        m = I.LLAMADA.match(llano)
         if not m:
             return                                     # no era para Clawd: no se guarda nada
-        resto = texto[m.end():].strip() if len(texto) == len(solo_ascii(texto)) else solo_ascii(texto)[m.end():].strip()
+        resto = llano[m.end():].strip()
         log(f"Oye Clawd ({segundos:.1f} s): {texto!r}")
         if len(resto) < 3:
             self.enviar({"cmd": "escuchar"})          # solo te ha llamado: ahora escucha lo que digas
@@ -548,16 +553,16 @@ class Companion:
         segundos = len(audio) / 32000
         log(f"Voz recibida: {segundos:.1f} s")
         if segundos < 0.5:
-            self.enviar({"err": "Muy corto: manten pulsado mientras hablas"})
+            self.enviar({"err": I.msg("muy_corto", IDIOMA_UI["actual"])})
             return
         if not self.whisper:
-            self.enviar({"err": "Whisper aun se esta cargando, espera un poco"})
+            self.enviar({"err": I.msg("cargando", IDIOMA_UI["actual"])})
             return
         t = time.time()
         texto = self.transcribir(audio)
         log(f"Entendido ({time.time() - t:.1f} s): {texto!r}")
         if not texto:
-            self.enviar({"err": "No te he entendido"})
+            self.enviar({"err": I.msg("no_entendido", self.idioma or IDIOMA_UI["actual"])})
             return
         self.procesar_texto(texto)
 
@@ -566,7 +571,7 @@ class Companion:
             return
         if self.ocupado:
             self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0})
-            self.enviar({"err": "Claude sigue con lo anterior"})
+            self.enviar({"err": I.msg("sigue", self.idioma or IDIOMA_UI["actual"])})
             return
         self.enviar({"oido": ascii_pantalla(texto), "cuenta": SEGUNDOS_PARA_CANCELAR})
         self.cancelar.clear()
@@ -582,85 +587,63 @@ class Companion:
 
     # --- órdenes para Clawd (solo si la frase es corta) ---
     def orden_local(self, texto: str) -> bool:
+        idioma = self.idioma if self.idioma in I.IDIOMAS else IDIOMA_UI["actual"]
         t = normalizar(texto)
-        if re.search(r"\b(temporizador|timer|cuenta atras|alarma|avisame en|avisame dentro)\b", t) and len(t.split()) <= 10:
-            if re.search(r"\b(cancela|quita|para|borra)\b", t):
-                segundos = 0
-            else:
-                segundos = segundos_de(t)
+        oido = ascii_pantalla(texto)
+        # temporizador ("pon un temporizador de diez minutos", "set a timer for five minutes", "定时十分钟")
+        if re.search(I.TIMER[idioma], t) and I.frase_corta(t, idioma, 10):
+            segundos = 0 if re.search(I.CANCELAR[idioma], t) else I.segundos_de(t, idioma)
             if segundos is not None:
-                self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0, "mascota": 1})
+                respuesta = I.msg("timer_cancel", idioma) if segundos == 0 else \
+                            I.msg("timer_de", idioma, d=I.duracion_texto(segundos))
+                self.enviar({"oido": oido, "cuenta": 0, "mascota": 1})
                 self.enviar({"cmd": f"temporizador:{segundos}"})
-                self.enviar({"local": "Temporizador cancelado" if segundos == 0 else f"Temporizador de {duracion_texto(segundos)}"})
+                self.enviar({"local": respuesta})
+                self.decir(respuesta, idioma)
                 log("Temporizador:", segundos, "s")
                 return True
-        if len(t.split()) > 5:
+        if not I.frase_corta(t, idioma):
             return False
-        ordenes = [
-            (r"\bpomodoro\b", "pomodoro", "Pomodoro de 25 min en marcha"),
-            (r"\bbail", "baila", "A bailar!"),
-            (r"\b(duermete|a dormir|buenas noches)\b", "dormir", "Buenas noches"),
-            (r"\b(despierta|despiertate)\b", "despertar", "Ya estoy despierto"),
-            (r"\b(silencio|callate)\b", "mudo", "Sonido apagado"),
-            (r"\b(activa el sonido|pon el sonido|con sonido)\b", "sonido", "Sonido encendido"),
-            (r"\b(a volar|juega a volar|vuela)\b", "vuela", "A volar!"),
-            (r"\b(a correr|juega a correr|corre)\b", "corre", "A correr!"),
-            (r"\b(juega|jugar|juegos|vamos a jugar)\b", "juegos", "A jugar!"),
-            (r"\b(como va|progreso|que hace claude|como vas)\b", "claude", "Asi va Claude"),
-            # las animaciones de Claude Code
-            (r"\b(salta|un salto)\b", "anim:jump", "Hop!"),
-            (r"\b(gira|da una vuelta|date la vuelta|vuelta)\b", "anim:turn", "Vueltecita"),
-            (r"\b(guina|guino|un guino)\b", "anim:wink", ";)"),
-            (r"\b(estornuda|achis)\b", "anim:sneeze", "Achis!"),
-            (r"\b(escondete|cucu|esconde)\b", "anim:peekaboo", "Cucu!"),
-            (r"\b(celebra|celebralo|fiesta)\b", "anim:celebrate", "Yuju!"),
-            (r"\b(mira|mira alrededor)\b", "anim:look", "Mirando..."),
-            (r"\b(asomate|asoma)\b", "anim:peek", "Hola?"),
-            (r"\b(cae|caete|tirate)\b", "anim:drop", "Plof!"),
-            (r"\b(moneda|haz la moneda)\b", "anim:coin-hop", "Tachan!"),
-            (r"\b(anda|camina|pasea)\b", "anim:waddle", "Paseito"),
-            (r"\b(zapatea|baile de pies)\b", "anim:tap", "Tap tap"),
-            (r"\b(abre la terminal|terminal)\b", "terminal", "Aqui la tienes"),
-            (r"\b(galaxia|nebula|universo|constelacion)\b", "galaxia", "Tu vault, en estrellas"),
-            (r"\b(vuelve|mascota)\b", "mascota", "Vuelvo"),
-        ]
-        for patron, cmd, respuesta in ordenes:
+        for patron, cmd, respuesta in I.ORDENES[idioma]:
             if re.search(patron, t):
-                self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0, "mascota": 1})
+                self.enviar({"oido": oido, "cuenta": 0, "mascota": 1})
                 self.enviar({"cmd": cmd})
                 self.enviar({"local": respuesta})
-                self.decir(respuesta)
+                self.decir(respuesta, idioma)
                 log("Orden para Clawd:", cmd)
                 return True
-        if re.search(r"\bque hora es\b", t):
-            self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0})
-            self.enviar({"local": f"Son las {datetime.datetime.now():%H:%M}"})
+        if re.search(I.QUE_HORA[idioma], t):
+            respuesta = I.msg("son_las", idioma, h=f"{datetime.datetime.now():%H:%M}")
+            self.enviar({"oido": oido, "cuenta": 0})
+            self.enviar({"local": respuesta})
+            self.decir(respuesta, idioma)
             return True
-        if re.search(r"\b(nueva conversacion|empieza de cero|olvida todo)\b", t):
+        if re.search(I.CONV_NUEVA[idioma], t):
             self.sesion = None
             self.f_sesion.unlink(missing_ok=True)
-            self.enviar({"oido": ascii_pantalla(texto), "cuenta": 0})
-            self.enviar({"local": "Conversacion nueva con Claude"})
+            self.enviar({"oido": oido, "cuenta": 0})
+            self.enviar({"local": I.msg("conv_nueva", idioma)})
             return True
         return False
 
     # --- Claude Code ---
     @staticmethod
     def describir(c: dict) -> str:
+        ui = IDIOMA_UI["actual"]
         nombre, e = c.get("name", ""), c.get("input") or {}
-        verbos = {"Read": "Leo", "Edit": "Edito", "Write": "Escribo", "NotebookEdit": "Edito"}
+        verbos = {"Read": "leo", "Edit": "edito", "Write": "escribo", "NotebookEdit": "edito"}
         if nombre in verbos:
-            return f"{verbos[nombre]} {Path(e.get('file_path', '')).name}"
+            return f"{I.msg(verbos[nombre], ui)} {Path(e.get('file_path', '')).name}"
         if nombre == "Bash":
             return "$ " + e.get("command", "")[:80]
         if nombre in ("Grep", "Glob"):
-            return f"Busco {e.get('pattern', '')}"
+            return f"{I.msg('busco', ui)} {e.get('pattern', '')}"
         if nombre == "WebSearch":
-            return "Busco en internet: " + e.get("query", "")
+            return I.msg("internet", ui) + e.get("query", "")
         if nombre == "WebFetch":
-            return "Leo una web"
+            return I.msg("web", ui)
         if nombre == "TodoWrite":
-            return "Organizo las tareas"
+            return I.msg("tareas", ui)
         return nombre
 
     def preguntar_claude(self, texto: str):
@@ -693,15 +676,15 @@ class Companion:
         if self.cancelar.is_set():
             return
         if not resultado:
-            self.enviar({"err": "Claude no ha contestado"})
+            self.enviar({"err": I.msg("claude_no", self.idioma or IDIOMA_UI["actual"])})
             return
         negados = resultado.get("permission_denials") or []
         if negados:
             n = negados[0]
-            self.enviar({"err": "Sin permiso: " + ascii_pantalla(self.describir(
+            self.enviar({"err": I.msg("sin_permiso", self.idioma or IDIOMA_UI["actual"]) + ascii_pantalla(self.describir(
                 {"name": n.get("tool_name"), "input": n.get("tool_input")}))})
         if resultado.get("subtype") != "success":
-            self.enviar({"err": "Claude ha tenido un problema"})
+            self.enviar({"err": I.msg("problema", self.idioma or IDIOMA_UI["actual"])})
         respuesta = ascii_pantalla(resultado.get("result") or "")[:1500]
         log("<- Claude:", respuesta)
         if respuesta:
@@ -719,7 +702,8 @@ class Companion:
                 continue
             self.enviar({"permiso": {k: ascii_pantalla(str(v)) for k, v in p.items()}})
             log("Claude pide permiso:", p.get("herramienta"), p.get("detalle", "")[:60])
-            self.decir(f"Claude necesita permiso para usar {p.get('herramienta', 'una herramienta')}.")
+            ui = IDIOMA_UI["actual"]
+            self.decir(I.msg("permiso_voz", ui, h=p.get("herramienta", "?")), ui)
         for pid in self.permisos_enviados - ahora:     # contestado, o has abierto la tapa
             self.enviar({"permiso_fin": pid})
         self.permisos_enviados = ahora
@@ -761,7 +745,8 @@ class Companion:
                     self.acabo_en = time.time()
                     self.enviar({"resumen": ascii_pantalla(v.ultimo_texto)[:400]})
                     log("Claude ha terminado:", v.proyecto)
-                    self.decir(f"Listo. Claude ha terminado en {v.proyecto or 'tu proyecto'}.")
+                    ui = IDIOMA_UI["actual"]
+                    self.decir(I.msg("listo_voz", ui, p=v.proyecto or I.msg("tu_proyecto", ui)), ui)
                 if estado == "trabajando":
                     self.aviso_pendiente = False
                 self.estado_antes = estado

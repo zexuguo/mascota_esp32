@@ -17,6 +17,7 @@
 //        PP..PP............PP..PP      <- piernas 2 x 4, en las esquinas
 // ------------------------------------------------------------
 #include "placa.h"
+#include "idiomas.h"
 
 #define C565(r, g, b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3))
 
@@ -45,10 +46,61 @@ const uint16_t PANEL = SUP, CREMA = TXT, GRIS = TXT2, GRIS_OSC = TXT3;
 
 // ---- Letras: dos familias y nada más ----
 //  - píxel 3x5 (texto_pixel) para títulos, bocadillos y juegos
-//  - monoespaciada efont (con tildes y ñ) para todo el texto
-#define F_TXT (&fonts::efontJA_14)
-#define F_PEQ (&fonts::efontJA_12)
-#define F_GRANDE (&fonts::efontJA_16)
+//  - monoespaciada efont (con tildes, ñ y chino simplificado) para todo el texto
+// Son variables: según el idioma, efontJA (latín con tildes, ñ, ç, l·l) o efontCN
+// (chino simplificado). Las cambia letras_para() al elegir idioma.
+const lgfx::IFont *F_TXT = &fonts::efontJA_14;
+const lgfx::IFont *F_PEQ = &fonts::efontJA_12;
+const lgfx::IFont *F_GRANDE = &fonts::efontJA_16;
+
+// Para textos que vienen de fuera (resúmenes, comandos, nombres de proyecto...):
+// la letra china solo si el texto tiene chino; si no, la latina (que tiene ñ, tildes, ç).
+const lgfx::IFont *letra_para(const char *t, const lgfx::IFont *tam) {
+  bool chino = false;
+  for (const char *c = t; *c; c++) if ((uint8_t)*c >= 0xE2 && (uint8_t)*c != 0xE2) { chino = true; break; }
+  int px = tam == F_GRANDE ? 16 : tam == F_PEQ ? 12 : 14;
+  if (chino) return px == 16 ? (const lgfx::IFont *)&fonts::efontCN_16 : px == 12 ? (const lgfx::IFont *)&fonts::efontCN_12 : (const lgfx::IFont *)&fonts::efontCN_14;
+  return px == 16 ? (const lgfx::IFont *)&fonts::efontJA_16 : px == 12 ? (const lgfx::IFont *)&fonts::efontJA_12 : (const lgfx::IFont *)&fonts::efontJA_14;
+}
+
+// Pinta un texto que mezcla latín y chino: cada trozo con la letra que tiene sus
+// caracteres (la china no tiene ñ ni tildes; la latina no tiene chino simplificado).
+// 'datum' como en LovyanGFX (top_left, middle_center...).
+void texto_mixto(LGFX_Sprite &g, const String &t, int x, int y, const lgfx::IFont *tam, textdatum_t datum) {
+  // trocear en tramos chino / no chino
+  String tramos[12];
+  bool es_chino[12];
+  int n = 0, i = 0;
+  while (i < (int)t.length() && n < 12) {
+    bool ch = (uint8_t)t[i] >= 0xE3;
+    int j = i;
+    while (j < (int)t.length()) {
+      uint8_t b = t[j];
+      if (((b >= 0xE3) != ch) && (b & 0xC0) != 0x80) break;
+      j++;
+    }
+    tramos[n] = t.substring(i, j);
+    es_chino[n++] = ch;
+    i = j;
+  }
+  int ancho = 0;
+  for (int k = 0; k < n; k++) { g.setFont(letra_para(es_chino[k] ? "中" : "a", tam)); ancho += g.textWidth(tramos[k]); }
+  int h = datum & 3;                               // 0 izquierda, 1 centro, 2 derecha
+  int xx = h == 1 ? x - ancho / 2 : h == 2 ? x - ancho : x;
+  g.setTextDatum((textdatum_t)(datum & ~3));       // la misma altura, alineado a la izquierda
+  for (int k = 0; k < n; k++) {
+    g.setFont(letra_para(es_chino[k] ? "中" : "a", tam));
+    g.drawString(tramos[k], xx, y);
+    xx += g.textWidth(tramos[k]);
+  }
+  g.setTextDatum(datum);
+}
+
+void letras_para(Idioma i) {
+  F_TXT = i == ZH ? (const lgfx::IFont *)&fonts::efontCN_14 : (const lgfx::IFont *)&fonts::efontJA_14;
+  F_PEQ = i == ZH ? (const lgfx::IFont *)&fonts::efontCN_12 : (const lgfx::IFont *)&fonts::efontJA_12;
+  F_GRANDE = i == ZH ? (const lgfx::IFont *)&fonts::efontCN_16 : (const lgfx::IFont *)&fonts::efontJA_16;
+}
 
 const int L = 4;   // tamaño del píxel de la escena
 
@@ -249,8 +301,12 @@ const Glifo *glifo(char c) {
   return nullptr;
 }
 
-// ancho del texto en píxeles de la rejilla
-int ancho_pixel(const char *t) {
+// ancho del texto en píxeles de la rejilla (de tamaño p)
+int ancho_pixel(const char *t, int p = L) {
+  if (no_ascii(t)) {                     // se pintará con la letra normal (efont: 8 px por columna)
+    int px = columnas_de(t) * (p >= 3 ? 8 : 7);
+    return (px + p - 1) / p;
+  }
   int w = 0;
   for (; *t; t++) {
     const Glifo *gl = glifo(*t);
@@ -259,8 +315,16 @@ int ancho_pixel(const char *t) {
   return w > 0 ? w - 1 : 0;
 }
 
-// escribe texto con la fuente pixel; (x, y) en casillas de tamaño p
+// escribe texto con la fuente pixel; (x, y) en casillas de tamaño p.
+// Si el texto no es ASCII (chino, tildes...), con la letra normal en su lugar.
 void texto_pixel(LGFX_Sprite &g, const char *t, int x, int y, int p, uint16_t col) {
+  if (no_ascii(t)) {
+    g.setFont(p >= 3 ? F_GRANDE : F_TXT);
+    g.setTextDatum(top_left);
+    g.setTextColor(col);
+    g.drawString(t, x * p, y * p + (5 * p - g.fontHeight()) / 2);
+    return;
+  }
   for (; *t; t++) {
     const Glifo *gl = glifo(*t);
     if (!gl) continue;

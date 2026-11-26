@@ -73,7 +73,7 @@ void clawd_juego(LGFX_Sprite &g, float x, float pies, bool brazos_arriba, Pierna
 }
 
 void texto_centrado(LGFX_Sprite &g, const char *t, int y_px, int p, uint16_t col) {
-  int w = ancho_pixel(t);
+  int w = ancho_pixel(t, p);
   texto_pixel(g, t, (240 / p - w) / 2, y_px / p, p, col);
 }
 
@@ -314,23 +314,23 @@ void juego_actualizar(uint32_t ahora) {
 }
 
 void juego_dibujar(LGFX_Sprite &g, uint32_t ahora) {
-  char b[32];
+  char b[64];
   if (juego == J_MENU) {
-    texto_centrado(g, "JUEGOS", 44, L, CLAWD);
+    texto_centrado(g, T("JUEGOS"), 44, L, CLAWD);
     // botón VUELA
     caja_pixel(g, BOT_X / L, BOT1_Y / L, BOT_W / L, BOT_H / L, L, PANEL);
     bool aleta = (ahora / 300) % 2;
     clawd_juego(g, 74, BOT1_Y + 54 - (aleta ? 4 : 0), aleta, PIERNAS_QUIETAS, false, false);
-    texto_pixel(g, "VUELA", 124 / L, (BOT1_Y + 16) / L, L, CREMA);
-    snprintf(b, sizeof(b), "RECORD %d", record_vuela);
+    texto_pixel(g, T("VUELA"), 124 / L, (BOT1_Y + 16) / L, L, CREMA);
+    snprintf(b, sizeof(b), "%s %d", T("RECORD"), record_vuela);
     texto_pixel(g, b, 124 / 2, (BOT1_Y + 48) / 2, 2, GRIS);
     // botón CORRE
     caja_pixel(g, BOT_X / L, BOT2_Y / L, BOT_W / L, BOT_H / L, L, PANEL);
     clawd_juego(g, 74, BOT2_Y + 56, false, (ahora / 120) % 2 ? PIERNAS_A : PIERNAS_B, false, false);
-    texto_pixel(g, "CORRE", 124 / L, (BOT2_Y + 16) / L, L, CREMA);
-    snprintf(b, sizeof(b), "RECORD %d", record_corre);
+    texto_pixel(g, T("CORRE"), 124 / L, (BOT2_Y + 16) / L, L, CREMA);
+    snprintf(b, sizeof(b), "%s %d", T("RECORD"), record_corre);
     texto_pixel(g, b, 124 / 2, (BOT2_Y + 48) / 2, 2, GRIS);
-    texto_centrado(g, "DESLIZA PARA SALIR", 284, 2, GRIS_OSC);
+    texto_centrado(g, T("DESLIZA PARA SALIR"), 284, 2, GRIS_OSC);
     return;
   }
 
@@ -343,18 +343,18 @@ void juego_dibujar(LGFX_Sprite &g, uint32_t ahora) {
 
   if (fase == F_LISTO) {
     caja_pixel(g, 6, 26, 48, 15, L, PANEL);
-    texto_centrado(g, juego == J_VUELA ? "TOCA = ALETEAR" : "TOCA = SALTAR", 26 * L + 3 * L, 2, CREMA);
-    texto_centrado(g, "TOCA PARA EMPEZAR", 26 * L + 9 * L, 2, GRIS);
+    texto_centrado(g, juego == J_VUELA ? T("TOCA = ALETEAR") : T("TOCA = SALTAR"), 26 * L + 3 * L, 2, CREMA);
+    texto_centrado(g, T("TOCA PARA EMPEZAR"), 26 * L + 9 * L, 2, GRIS);
   }
   if (fase == F_FIN) {
     caja_pixel(g, 5, 22, 50, 26, L, PANEL);
-    texto_centrado(g, record_nuevo ? "RECORD!" : "FIN", 25 * L, L, record_nuevo ? AMARILLO : CLAWD);
-    snprintf(b, sizeof(b), "PUNTOS %d   RECORD %d", puntos, juego == J_VUELA ? record_vuela : record_corre);
+    texto_centrado(g, record_nuevo ? T("RECORD!") : T("FIN"), 25 * L, L, record_nuevo ? AMARILLO : CLAWD);
+    snprintf(b, sizeof(b), "%s %d   %s %d", T("PUNTOS"), puntos, T("RECORD"), juego == J_VUELA ? record_vuela : record_corre);
     texto_centrado(g, b, 33 * L, 2, CREMA);
     if (ahora - fin_desde > 700) {
-      texto_centrado(g, "TOCA = OTRA VEZ", 39 * L, 2, GRIS);
+      texto_centrado(g, T("TOCA = OTRA VEZ"), 39 * L, 2, GRIS);
       caja_pixel(g, 18, 68, 24, 9, L, PANEL);
-      texto_centrado(g, "MENU", 70 * L, L, CREMA);
+      texto_centrado(g, T("MENU"), 70 * L, L, CREMA);
     }
   }
 }

@@ -130,3 +130,16 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
 - Tapa abierta (o con monitor externo): no hace nada y te sale el diálogo normal. Si abres la tapa mientras
   espera, vuelve al diálogo normal. Ante cualquier fallo, no decide nada (nunca bloquea a Claude).
 - Quitarlo: borrar la entrada `PermissionRequest` de `~/.claude/settings.json`.
+
+## Idiomas: español, inglés, chino y catalán
+- **Elegir**: cortina → ⚙ → Ajustes → Idioma (cada idioma escrito en su lengua). La placa lo recuerda.
+- **Placa** (`src/idiomas.h`): todos los textos pasan por `T("texto en español")`, que busca la traducción
+  en la tabla `TRAD`. En chino se cambia a la letra `efontCN` (chino simplificado); lo que llega del PC se pinta
+  **por tramos** (`texto_mixto`): lo chino con la letra china y lo latino con la latina (la china no tiene ñ ni tildes).
+  Los títulos de píxeles en chino se pintan con la letra normal.
+- **Voz** (`idiomas_pc.py`): Whisper **detecta el idioma** de cada frase (de los cuatro) y Claude responde en el
+  mismo. Órdenes, números del temporizador ("ten minutes", "deu minuts", "十五分钟"), "Hey / Ei / 嘿 Clawd",
+  mensajes y fecha en cada idioma. Una voz de Piper por idioma (`en_US-lessac`, `zh_CN-huayan`, `ca_ES-upc_ona`,
+  `es_ES-sharvard`), comprobadas con Whisper; "Claude" se escribe como se pronuncia en cada una
+  (Clod / Clawed / 克劳德 / Clòd) solo para la voz.
+- Añadir un texto nuevo: escribirlo con `T("...")` y añadir su fila a `TRAD` en `idiomas.h`.

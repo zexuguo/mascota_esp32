@@ -210,7 +210,7 @@ const int MON_ACTS = 4;
 String mon_acts[MON_ACTS];                 // los últimos pasos (el más nuevo, el último)
 uint32_t claude_duro = 0, claude_fin = 0;  // cuánto tardó la última vez y cuándo acabó
 
-// ---------- El aviso grande: "Claude ha terminado" / "Claude te necesita" ----------
+// ---------- El aviso grande: T("Claude ha terminado") / T("Claude te necesita") ----------
 enum Alerta { AL_NO, AL_LISTO, AL_ESPERA, AL_TIEMPO };
 Alerta alerta = AL_NO;
 uint32_t prox_beep_alerta = 0;
@@ -230,7 +230,7 @@ bool toque_permiso = false;
 //  CLAUDE:     Claude Code trabajando en el PC
 enum Voz { VOZ_NO, VOZ_ESCUCHA, VOZ_TRANSCRIBE, VOZ_CUENTA, VOZ_CLAUDE };
 Voz voz = VOZ_NO;
-bool voz_auto = false;     // escuchando tras "Oye Clawd": se para sola al callarte
+bool voz_auto = false;     // escuchando tras T("Oye Clawd"): se para sola al callarte
 uint32_t voz_ultimo_sonido = 0;
 uint32_t voz_desde = 0, cuenta_fin = 0, baila_hasta = 0;
 bool ptt_tactil = false;   // la grabación la empezó un dedo (y no el botón)
@@ -257,6 +257,24 @@ int byte_de_letra(const String &t, int k) {      // dónde empieza la letra núm
   return t.length();
 }
 
+// Columnas que ocupa un texto: los caracteres chinos (3 bytes en UTF-8,
+// desde U+3000) ocupan 2, como en una terminal; el resto, 1.
+static int cols_letra(uint8_t b) { return b >= 0xE3 ? 2 : 1; }
+int ancho_cols(const String &t) {
+  int n = 0;
+  for (int i = 0; i < (int)t.length(); i++) if ((t[i] & 0xC0) != 0x80) n += cols_letra(t[i]);
+  return n;
+}
+int byte_de_columna(const String &t, int cols) {   // dónde se pasa de 'cols' columnas
+  int n = 0;
+  for (int i = 0; i < (int)t.length(); i++) {
+    if ((t[i] & 0xC0) == 0x80) continue;
+    n += cols_letra(t[i]);
+    if (n > cols) return i;
+  }
+  return t.length();
+}
+
 void term_linea(const String &l, uint16_t col) {
   LineaTerm &d = term[term_total % TERM_N];
   strlcpy(d.txt, l.c_str(), sizeof(d.txt));
@@ -280,10 +298,10 @@ void term_add(const String &texto, uint16_t col, const char *prefijo = "") {
       primera = false;
       int ancho = TERM_COLS - letras(cab);
       int corte = parrafo.length();
-      if (letras(parrafo) > ancho) {
-        int limite = byte_de_letra(parrafo, ancho);
+      if (ancho_cols(parrafo) > ancho) {
+        int limite = byte_de_columna(parrafo, ancho);
         corte = parrafo.lastIndexOf(' ', limite);
-        if (corte <= 0) corte = limite;
+        if (corte <= 0 || limite - corte > 24) corte = limite;   // chino: sin espacios, se corta donde llegue
       }
       term_linea(cab + parrafo.substring(0, corte), col);
       parrafo = parrafo.substring(corte);
@@ -333,14 +351,14 @@ void voz_mandar_trozos(bool todo) {
 void voz_empezar(bool por_tactil) {
   if (voz == VOZ_ESCUCHA) return;
   if (mic_mudo) {
-    aviso("Micro apagado: baja la cortina");
-    term_add("El micro está apagado (baja la cortina)", ROJO, "! ");
+    aviso(T("Micro apagado: baja la cortina"));
+    term_add(T("El micro está apagado (baja la cortina)"), ROJO, "! ");
     SONAR(S_ERROR);
     return;
   }
   if (!pc_conectado()) {
-    aviso("Para oírte necesito el PC");
-    term_add("Sin PC: el companion no está en marcha", ROJO, "! ");
+    aviso(T("Para oírte necesito el PC"));
+    term_add(T("Sin PC: el companion no está en marcha"), ROJO, "! ");
     SONAR(S_ERROR);
     return;
   }
@@ -372,7 +390,9 @@ void voz_terminar() {
 
 void cmd_local(const String &c);
 void poner_mudo(bool mudo);
-extern bool avisos_abierto;
+extern bool avisos_abierto, ajustes_abierto;
+void ajustes_toque(int x, int y);
+void poner_idioma(Idioma i);
 void reloj_toque(int x, int y);
 void permiso_toque(int x, int y);
 void avisos_toque(int x, int y);
@@ -467,7 +487,7 @@ void al_mensaje(JsonDocument &doc) {
     perm_desde = millis();
     perm_prox_pitido = 0;
     despertar(false);
-    notificar(1, "Claude pide permiso", perm_herr + " · " + perm_proy);
+    notificar(1, T("Claude pide permiso"), perm_herr + " · " + perm_proy);
   }
   if (doc["permiso_fin"].is<const char *>() && perm_id == doc["permiso_fin"].as<String>()) perm_activo = false;
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
@@ -509,7 +529,7 @@ void al_tocar(int x, int y) {
     reaccionar(R_SALTO, 700);
     saltar(7);
     SONAR(S_SALTO);
-    aviso("Bien hecho!");
+    aviso(T("Bien hecho!"));
     return;
   }
   if (y > PANEL_Y) {                             // panel: siguiente página
@@ -525,10 +545,10 @@ void al_tocar(int x, int y) {
         pomo_ini = ahora;
         pomo_fin = ahora + FOCO_MS;
         SONAR(S_POMO_INI);
-        aviso("Pomodoro: 25 min de foco");
+        aviso(T("Pomodoro: 25 min de foco"));
       } else {
         pomo = POMO_NO;
-        aviso("Pomodoro cancelado");
+        aviso(T("Pomodoro cancelado"));
       }
       ultimo_tap = 0;
       return;
@@ -549,7 +569,7 @@ void empezar_pomodoro() {
   pomo_ini = ahora;
   pomo_fin = ahora + FOCO_MS;
   SONAR(S_POMO_INI);
-  aviso("Pomodoro: 25 min de foco");
+  aviso(T("Pomodoro: 25 min de foco"));
 }
 
 String mmss(uint32_t ms);
@@ -583,11 +603,16 @@ void cmd_local(const String &c) {
     uint32_t sg = c.substring(13).toInt();
     if (sg == 0) temp_cancelar(); else temp_empezar(sg);
   }
-  else if (c == "prueba:listo") { mon_resumen = "He terminado el rediseño: barra de estado, cortina y transiciones. Todo compila."; claude_duro = 754000; claude_fin = ahora; alerta = AL_LISTO; notificar(0, "Claude ha terminado", "clawd · 12 min"); }
+  else if (c == "prueba:listo") { mon_resumen = "He terminado el rediseño: barra de estado, cortina y transiciones. Todo compila."; claude_duro = 754000; claude_fin = ahora; alerta = AL_LISTO; notificar(0, T("Claude ha terminado"), "clawd · 12 min"); }
   else if (c == "prueba:espera") { alerta = AL_ESPERA; }
   else if (c == "prueba:susto") { reaccionar(R_SUSTO, 1500); saltar(10); }
   else if (c == "prueba:jugar") { fase = F_JUGANDO; }
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
+  else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
+  else if (c.startsWith("idioma:")) {
+    String cod = c.substring(7);
+    for (int i = 0; i < 4; i++) if (cod == CODIGO_IDIOMA[i]) poner_idioma((Idioma)i);
+  }
   else if (c == "prueba:nada") { alerta = AL_NO; }
   else if (c == "juegos")    { pantalla = PANT_JUEGOS; juego = J_MENU; fase = F_LISTO; }
   else if (c == "vuela")     { pantalla = PANT_JUEGOS; juego_empezar(J_VUELA); }
@@ -603,7 +628,7 @@ void al_tocar_terminal(int x, int y) {
   term_actividad = ahora;
   if (voz == VOZ_CUENTA || voz == VOZ_CLAUDE || pc_claude_voz) {   // cancelar
     pc_enviar("cancelar");
-    term_add("Cancelado", ROJO, "! ");
+    term_add(T("Cancelado"), ROJO, "! ");
     voz = VOZ_NO;
     return;
   }
@@ -615,14 +640,14 @@ void poner_mic(bool apagado) {
   ajustes.putBool("mic", apagado);
   if (apagado) { musica_desde = 0; baila_hasta = 0; }
   SONAR(S_CLIC);
-  aviso(apagado ? "Micro: apagado" : "Micro: encendido");
+  aviso(apagado ? T("Micro: apagado") : T("Micro: encendido"));
 }
 
 void poner_mudo(bool mudo) {
   audio_mudo = mudo;
   ajustes.putBool("mudo", mudo);
   if (!mudo) SONAR(S_CLIC);
-  aviso(mudo ? "Sonido: apagado" : "Sonido: encendido");
+  aviso(mudo ? T("Sonido: apagado") : T("Sonido: encendido"));
 }
 
 // ---------- Gestos ----------
@@ -676,12 +701,12 @@ void dibujar_indicador() {                  // puntitos en la barra: en qué pan
 
 // ---------- Ajustes de la cortina (se guardan en la placa) ----------
 bool habla_on = true;      // Clawd dice en voz alta las respuestas y los avisos
-bool oye_on = true;        // "Oye Clawd": escucha si le llamas
+bool oye_on = true;        // T("Oye Clawd"): escucha si le llamas
 bool carteles_on = true;   // los carteles de cada 50 min (beber agua...)
 int volumen = 70;          // % del altavoz
 
-// ---------- "Oye Clawd": la placa nota que hablas y le pasa el audio al PC ----------
-bool vad_activo = false;   // grabando un trozo para ver si dice "Oye Clawd"
+// ---------- T("Oye Clawd"): la placa nota que hablas y le pasa el audio al PC ----------
+bool vad_activo = false;   // grabando un trozo para ver si dice T("Oye Clawd")
 uint32_t vad_desde = 0, vad_ultimo_sonido = 0, vad_pausa_hasta = 0;
 
 // ---------- La cortina: se baja desde arriba, como en un móvil ----------
@@ -690,6 +715,7 @@ bool cortina_arrastre = false;
 int brillo_usuario = 100;                   // % que eliges en la cortina (se guarda)
 const int CT_FILA1 = 52, CT_FILA2 = 114, CT_BOT = 40, CT_BRILLO = 184, CT_VOLUMEN = 206, CT_AVISO = 226, CT_DOCK = 264;
 bool avisos_abierto = false;               // la lista completa de avisos
+bool ajustes_abierto = false;              // Ajustes (el idioma)
 
 // Historial de avisos (lo último, primero)
 struct Notif { uint8_t tipo; String titulo, sub; uint32_t t; };   // 0 listo, 1 espera, 2 pomodoro
@@ -703,7 +729,7 @@ void notificar(uint8_t tipo, const String &titulo, const String &sub) {
   n_notifs = min(n_notifs + 1, MAX_NOTIFS);
 }
 
-// "Habla" de verdad = encendido y sin "No molestar": se lo dice al PC
+// T("Habla") de verdad = encendido y sin T("No molestar"): se lo dice al PC
 void enviar_habla() { pc_enviar(habla_on && !no_molestar ? "habla:1" : "habla:0"); }
 
 void poner_ajuste(const char *clave, bool &var, bool valor, const char *si, const char *no) {
@@ -727,6 +753,7 @@ void volumen_desde_x(int x) {
 
 void cortina_toque(int x, int y) {
   SONAR(S_CLIC);
+  if (y < 46 && x > 196) { ajustes_abierto = true; cortina_obj = 0; return; }   // ⚙ Ajustes
   int fila = (y >= CT_FILA1 && y < CT_FILA1 + 58) ? 0 : (y >= CT_FILA2 && y < CT_FILA2 + 58) ? 1 : -1;
   if (fila >= 0) {
     int i = fila * 4 + constrain(x / 60, 0, 3);
@@ -736,14 +763,14 @@ void cortina_toque(int x, int y) {
       case 2:
         no_molestar = !no_molestar;
         ajustes.putBool("dnd", no_molestar);
-        aviso(no_molestar ? "No molestar: solo alarmas y permisos" : "No molestar: apagado");
+        aviso(no_molestar ? T("No molestar: solo alarmas y permisos") : T("No molestar: apagado"));
         enviar_habla();
         break;
       case 3: if (durmiendo) despertar(); else cmd_local("dormir"); break;
       case 4: reloj_abierto = true; rueda_modo = 0; cortina_obj = 0; break;
-      case 5: poner_ajuste("oye", oye_on, !oye_on, "Oye Clawd: escuchando", "Oye Clawd: apagado"); break;
-      case 6: poner_ajuste("habla", habla_on, !habla_on, "Clawd habla", "Clawd no habla"); enviar_habla(); break;
-      case 7: poner_ajuste("carteles", carteles_on, !carteles_on, "Carteles: activados", "Carteles: apagados"); break;
+      case 5: poner_ajuste("oye", oye_on, !oye_on, T("Oye Clawd: escuchando"), T("Oye Clawd: apagado")); break;
+      case 6: poner_ajuste("habla", habla_on, !habla_on, T("Clawd habla"), T("Clawd no habla")); enviar_habla(); break;
+      case 7: poner_ajuste("carteles", carteles_on, !carteles_on, T("Carteles: activados"), T("Carteles: apagados")); break;
     }
   } else if (y >= CT_AVISO && y < CT_DOCK - 2) {
     if (n_notifs > 0) { avisos_abierto = true; cortina_obj = 0; }
@@ -824,7 +851,7 @@ void leer_tactil() {
         bool cierra = abierta && dy < 0;
         gesto = (abre || cierra) ? G_CORTINA : (abierta ? G_NADA : G_ARRASTRAR);
       } else {
-        gesto = (abierta || reloj_abierto || avisos_abierto) ? G_NADA : G_DESLIZAR;
+        gesto = (abierta || reloj_abierto || avisos_abierto || ajustes_abierto) ? G_NADA : G_DESLIZAR;
       }
     }
     if (gesto == G_CORTINA) {               // la cortina sigue al dedo
@@ -875,6 +902,7 @@ void leer_tactil() {
     } else if (gesto == G_DUDA) {           // no se movió ni se mantuvo: un toque
       if (abierta) cortina_toque(tx0, ty0);
       else if (avisos_abierto) avisos_toque(tx0, ty0);
+      else if (ajustes_abierto) ajustes_toque(tx0, ty0);
       else if (reloj_abierto && ty0 >= BARRA_H) reloj_toque(tx0, ty0);
       else if (ty0 < BARRA_H) { cortina_obj = 1; SONAR(S_CLIC); }   // tocar la barra: abre la cortina
       else if (pantalla == PANT_MASCOTA) al_tocar(tx0, ty0);
@@ -899,14 +927,14 @@ void actualizar_voz() {
   if (voz == VOZ_ESCUCHA) {
     voz_mandar_trozos(false);
     if (ahora - voz_desde > VOZ_MAX_MS) voz_terminar();   // máximo 15 s
-    // tras "Oye Clawd", se para sola cuando te callas (1 s de silencio)
+    // tras T("Oye Clawd"), se para sola cuando te callas (1 s de silencio)
     if (voz_auto && ahora - voz_desde > 1500 && ahora - voz_ultimo_sonido > 1000) voz_terminar();
   }
   if (voz != VOZ_ESCUCHA) voz_auto = false;
   // si el PC no contesta, no quedarse colgado
   if (voz == VOZ_TRANSCRIBE && ahora - voz_desde > 30000) {
     voz = VOZ_NO;
-    term_add("El PC no ha contestado", ROJO, "! ");
+    term_add(T("El PC no ha contestado"), ROJO, "! ");
   }
   if (voz == VOZ_CUENTA && ahora > cuenta_fin + 3000 && !pc_claude_voz) voz = VOZ_NO;
   if (voz == VOZ_CLAUDE && !pc_conectado()) voz = VOZ_NO;
@@ -929,8 +957,8 @@ void leer_micro() {
     return;
   }
 
-  // "Oye Clawd": si nota voz, graba ese trozo (con el medio segundo de antes) y lo manda al PC.
-  // El PC lo pasa a texto y solo hace caso si empieza por "Oye Clawd"; si no, lo tira.
+  // T("Oye Clawd"): si nota voz, graba ese trozo (con el medio segundo de antes) y lo manda al PC.
+  // El PC lo pasa a texto y solo hace caso si empieza por T("Oye Clawd"); si no, lo tira.
   const float umbral_voz = max(110.0f, min(suelo_ruido, 30.0f) * 5);
   bool puede = oye_on && !mic_mudo && !no_molestar && voz == VOZ_NO && !bailando && !durmiendo &&
                pc_conectado() && rep_nivel == 0 && ahora > vad_pausa_hasta && pantalla != PANT_JUEGOS;
@@ -999,16 +1027,17 @@ void leer_pc() {
   pc_actualizar();
   bool conectado = pc_conectado();
   if (conectado && !pc_estaba) {
-    aviso("Conectado al PC");
+    aviso(T("Conectado al PC"));
     if (!durmiendo && reac == R_NADA) animar(A_WADDLE, ahora);   // entra andando de lado
   }
-  if (!conectado && pc_estaba) aviso("PC desconectado");
+  if (!conectado && pc_estaba) aviso(T("PC desconectado"));
   pc_estaba = conectado;
   if (conectado && !arranque_contado) {     // contarle al PC por qué hemos arrancado
     arranque_contado = true;
-    char b[120];
-    snprintf(b, sizeof(b), "{\"ev\":\"arranque\",\"motivo\":\"%s\",\"paso\":%lu,\"habla\":%d}",
-             nombre_motivo(motivo_arranque), (unsigned long)miga_anterior, habla_on && !no_molestar ? 1 : 0);
+    char b[160];
+    snprintf(b, sizeof(b), "{\"ev\":\"arranque\",\"motivo\":\"%s\",\"paso\":%lu,\"habla\":%d,\"idioma\":\"%s\"}",
+             nombre_motivo(motivo_arranque), (unsigned long)miga_anterior, habla_on && !no_molestar ? 1 : 0,
+             CODIGO_IDIOMA[idioma]);
     pc_enviar_linea(b);
   }
 
@@ -1017,7 +1046,7 @@ void leer_pc() {
   if (c != claude_prev) {
     if (c == "trabajando" && claude_prev != "esperando") claude_desde = ahora;
     if (c == "trabajando") { alerta = AL_NO; mon_resumen = ""; }
-    if (c == "esperando") { alerta = AL_ESPERA; notificar(1, "Claude te necesita", "Pide permiso en la terminal"); }
+    if (c == "esperando") { alerta = AL_ESPERA; notificar(1, T("Claude te necesita"), T("Pide permiso en la terminal")); }
     // con la tapa cerrada, enseñar el progreso en cuanto empieza a trabajar
     if ((c == "trabajando" || c == "esperando") && pc_tapa && pantalla == PANT_MASCOTA) pantalla = PANT_CLAUDE;
     if (c == "trabajando") despertar(false);
@@ -1031,7 +1060,7 @@ void leer_pc() {
       despertar(false);
       alerta = AL_LISTO;                   // no se quita hasta que lo toques
       claude_duro = ahora - claude_desde;
-      notificar(0, "Claude ha terminado", (mon_proyecto.length() ? mon_proyecto : String("Claude Code")) + " · " + duracion(claude_duro));
+      notificar(0, T("Claude ha terminado"), (mon_proyecto.length() ? mon_proyecto : String("Claude Code")) + " · " + duracion(claude_duro));
       claude_fin = ahora;
       beeps_alerta = 0;
       prox_beep_alerta = ahora + 120000;
@@ -1073,12 +1102,12 @@ void actualizar_tiempos() {
     pomo_fin = ahora + DESCANSO_MS;
     despertar(false);
     reaccionar(R_POMO_FIN, 3500);
-    notificar(2, "Pomodoro terminado", "Toca descansar 5 minutos");
+    notificar(2, T("Pomodoro terminado"), T("Toca descansar 5 minutos"));
     animar(A_CELEBRATE, ahora);
     saltar(9);
     SONAR(S_POMO_FIN);
     soltar_confeti(cx, SUELO - 90, 25);
-    aviso("Descanso: 5 minutos", 4000);
+    aviso(T("Descanso: 5 minutos"), 4000);
   } else if (pomo == POMO_DESCANSO && ahora > pomo_fin) {
     pomo = POMO_NO;
     despertar(false);
@@ -1176,6 +1205,7 @@ const char *const ICO_RELOJ[]  = {"..XXX..", ".X...X.", "X..X..X", "X..XX.X", "X
 const char *const ICO_LUNA[]   = {"..XXX..", ".XX....", "XX.....", "XX.....", "XX.....", ".XX....", "..XXX.."};
 const char *const ICO_SOL[]    = {"X.X.X", ".XXX.", "XXXXX", ".XXX.", "X.X.X"};
 const char *const ICO_CERRAR[] = {"X...X", ".X.X.", "..X..", ".X.X.", "X...X"};
+const char *const ICO_AJUSTES[] = {"..X.X..", ".XXXXX.", "XX...XX", ".X...X.", "XX...XX", ".XXXXX.", "..X.X.."};
 const char *const ICO_DND[]     = {"..XXX..", ".XXXXX.", "XXXXXXX", "X.....X", "XXXXXXX", ".XXXXX.", "..XXX.."};
 const char *const ICO_ZZ[]      = {"XXXX...", "..X....", ".X.XXX.", "XXXX.X.", "....X..", "...XXX."};
 const char *const ICO_ONDA[]    = {"....X....", "..X.X.X..", "X.X.X.X.X", "..X.X.X..", "....X...."};
@@ -1288,7 +1318,7 @@ void texto_panel(const String &txt, uint16_t col, const String &sub = "") {
     if (txt[mitad + d] == ' ') corte = mitad + d;
     else if (txt[mitad - d] == ' ') corte = mitad - d;
   }
-  if (corte < 0) corte = mitad;
+  if (corte < 0) corte = byte_de_letra(txt, letras(txt) / 2);   // sin espacios (chino): por la mitad
   g.drawString(txt.substring(0, corte), 120, PANEL_Y + 22);
   g.drawString(txt.substring(corte + 1), 120, PANEL_Y + 40);
 }
@@ -1316,11 +1346,11 @@ void dibujar_panel() {
   tarjeta(8, PANEL_Y + 2, 224, 58);
 
   if (voz == VOZ_ESCUCHA) {
-    fila_dato("Te escucho", "suelta para enviar", min(1.0f, nivel_voz / 1500), TXT);
+    fila_dato(T("Te escucho"), T("suelta para enviar"), min(1.0f, nivel_voz / 1500), TXT);
     return;
   }
   if (voz == VOZ_TRANSCRIBE) {
-    texto_panel("Entendiendo lo que dices…", TXT2);
+    texto_panel(T("Entendiendo lo que dices…"), TXT2);
     return;
   }
   if (ahora < aviso_hasta) {
@@ -1328,7 +1358,7 @@ void dibujar_panel() {
     return;
   }
   if (claude_prev == "esperando") {
-    texto_panel("Claude te necesita", AMARILLO, "Pide permiso en la terminal");
+    texto_panel(T("Claude te necesita"), AMARILLO, T("Pide permiso en la terminal"));
     return;
   }
   if (claude_prev == "trabajando") {
@@ -1349,11 +1379,11 @@ void dibujar_panel() {
     bool foco = pomo == POMO_FOCO;
     uint32_t total = foco ? FOCO_MS : DESCANSO_MS;
     uint32_t queda = pomo_fin > ahora ? pomo_fin - ahora : 0;
-    fila_dato(foco ? "Foco" : "Descanso", mmss(queda), 1 - (float)queda / total, foco ? VERDE : TXT2);
+    fila_dato(foco ? T("Foco") : T("Descanso"), mmss(queda), 1 - (float)queda / total, foco ? VERDE : TXT2);
     return;
   }
   if (recordatorio >= 0) {
-    texto_panel("Toca para decir que sí", TXT2);
+    texto_panel(T("Toca para decir que sí"), TXT2);
     return;
   }
 
@@ -1363,7 +1393,7 @@ void dibujar_panel() {
     prox_pagina = ahora + 7000;
   }
   if (!pc_conectado()) {
-    texto_panel("Sin conexión con el PC", TXT2, "El companion no está en marcha");
+    texto_panel(T("Sin conexión con el PC"), TXT2, T("El companion no está en marcha"));
     return;
   }
   // el color solo cuando hay algo que contar (caliente, llena, poca batería)
@@ -1374,11 +1404,11 @@ void dibujar_panel() {
       break;
     }
     case 1:
-      fila_dato("Memoria", String((int)pc_ram) + " %", pc_ram / 100, pc_ram > 90 ? ROJO : TXT2);
+      fila_dato(T("Memoria"), String((int)pc_ram) + " %", pc_ram / 100, pc_ram > 90 ? ROJO : TXT2);
       break;
     case 2:
       if (pc_bat >= 0)
-        fila_dato("Batería", String(pc_bat) + " %" + (pc_carga ? "  ·  cargando" : ""), pc_bat / 100.0f,
+        fila_dato(T("Batería"), String(pc_bat) + " %" + (pc_carga ? T("  ·  cargando") : ""), pc_bat / 100.0f,
                   pc_carga ? VERDE : (pc_bat <= 20 ? ROJO : TXT2));
       break;
   }
@@ -1423,7 +1453,7 @@ void cabecera_claude(const String &sub, bool trabaja, bool espera, bool escucha)
   g.setFont(F_GRANDE);
   g.setTextColor(TXT);
   g.drawString("Claude Code", 50, 38);
-  g.setFont(F_PEQ);
+  g.setFont(letra_para(sub.c_str(), F_PEQ));
   g.setTextColor(TXT2);
   g.drawString(sub, 50, 54);
   if (trabaja) dibujar_spinner(g, 222, 42, ahora, CLAWD, 2);
@@ -1433,7 +1463,7 @@ void cabecera_claude(const String &sub, bool trabaja, bool espera, bool escucha)
 void fotograma_terminal() {
   bool trabaja = voz == VOZ_CLAUDE || pc_claude_voz;
   g.fillScreen(TERM_FONDO);
-  cabecera_claude(trabaja ? "toca para parar" : "por voz · en tu carpeta", trabaja, false, voz == VOZ_ESCUCHA);
+  cabecera_claude(trabaja ? T("toca para parar") : T("por voz · en tu carpeta"), trabaja, false, voz == VOZ_ESCUCHA);
 
   // historial
   g.setFont(F_TXT);
@@ -1445,16 +1475,16 @@ void fotograma_terminal() {
     if (i < 0 || i < term_total - hay) continue;
     const LineaTerm &l = term[i % TERM_N];
     g.setTextColor(l.col);
-    g.drawString(l.txt, 8, 70 + f * 16);
+    texto_mixto(g, l.txt, 8, 70 + f * 16, F_TXT, top_left);
   }
   if (term_total == 0) {
     g.setTextColor(TXT2);
-    g.drawString("Mantén pulsado y habla.", 10, 82);
+    g.drawString(T("Mantén pulsado y habla."), 10, 82);
     g.setTextColor(TXT3);
-    g.drawString("Lo que digas se lo paso a", 10, 112);
-    g.drawString("Claude Code: puede leer y", 10, 128);
-    g.drawString("editar archivos de este", 10, 144);
-    g.drawString("ordenador.", 10, 160);
+    g.drawString(T("Lo que digas se lo paso a"), 10, 112);
+    g.drawString(T("Claude Code: puede leer y"), 10, 128);
+    g.drawString(T("editar archivos de este"), 10, 144);
+    g.drawString(T("ordenador."), 10, 160);
   }
   if (term_scroll > 0) patron(g, ICO_TACHON, 1, 226, 286, 2, TXT3);   // no estás viendo lo último
 
@@ -1467,17 +1497,17 @@ void fotograma_terminal() {
   switch (voz) {
     case VOZ_ESCUCHA:
       g.setTextColor(TXT);
-      g.drawString("Te escucho…", 10, ys);
+      g.drawString(T("Te escucho…"), 10, ys);
       barra(110, ys - 3, 120, 6, min(1.0f, nivel_voz / 1500), TXT);
       break;
     case VOZ_TRANSCRIBE:
       g.setTextColor(TXT2);
-      g.drawString("Entendiendo…", 10, ys);
+      g.drawString(T("Entendiendo…"), 10, ys);
       break;
     case VOZ_CUENTA: {
       int s = cuenta_fin > ahora ? (cuenta_fin - ahora) / 1000 + 1 : 0;
       g.setTextColor(AMARILLO);
-      g.drawString(s > 0 ? "Envío en " + String(s) + " s · toca para cancelar" : "Enviando…", 10, ys);
+      g.drawString(s > 0 ? T("Envío en ") + String(s) + T(" s · toca para cancelar") : T("Enviando…"), 10, ys);
       break;
     }
     default:
@@ -1487,7 +1517,7 @@ void fotograma_terminal() {
         g.drawString(String(VERBOS[(ahora / 4000) % N_VERBOS]) + "…", 26, ys);
       } else {
         g.setTextColor(TXT3);
-        g.drawString("Mantén pulsado para hablar", 10, ys);
+        g.drawString(T("Mantén pulsado para hablar"), 10, ys);
       }
   }
 
@@ -1554,8 +1584,8 @@ void fotograma() {
       andando = false;
       aplicar_fotograma(fa, p, (int)cx - 64);
       if (fa.offset <= 0) {                 // si está visible, el bocadillo de la reacción
-        if (reac == R_LISTO) texto_bocadillo = "Listo!";
-        else if (reac == R_POMO_FIN) texto_bocadillo = "Descanso!";
+        if (reac == R_LISTO) texto_bocadillo = T("Listo!");
+        else if (reac == R_POMO_FIN) texto_bocadillo = T("Descanso!");
       }
       break;
 
@@ -1563,7 +1593,7 @@ void fotograma() {
       p.ojos = parpadeo ? OJOS_CERRADOS : OJOS_GRANDES;
       p.mirar = 0;
       p.brazo_d = 1;                       // la pinza en la "oreja"
-      texto_bocadillo = voz == VOZ_ESCUCHA ? "Te escucho..." : "Mmm...";
+      texto_bocadillo = voz == VOZ_ESCUCHA ? T("Te escucho...") : "Mmm...";
       andando = false;
       break;
 
@@ -1571,7 +1601,7 @@ void fotograma() {
       switch (reac) {
         case R_HOLA:
           p.brazo_d = (t_reac / 220) % 2;
-          texto_bocadillo = "Hola!";
+          texto_bocadillo = T("Hola!");
           break;
         case R_SALTO:
         case R_CONTENTO:
@@ -1590,7 +1620,7 @@ void fotograma() {
           p.ojos = OJOS_FELICES;
           p.brazo_i = (t_reac / 180) % 2;
           p.brazo_d = 1 - p.brazo_i;
-          texto_bocadillo = reac == R_LISTO ? "Listo!" : (reac == R_POMO_FIN ? "Descanso!" : "A por otra!");
+          texto_bocadillo = reac == R_LISTO ? T("Listo!") : (reac == R_POMO_FIN ? T("Descanso!") : "A por otra!");
           if (t_reac < 1200 && (t_reac / 150) % 2 == 0) soltar_confeti(cx, SUELO - 80, 1);
           if (t_reac > 900 && t_reac < 1000) saltar(7);
           break;
@@ -1698,9 +1728,9 @@ void fotograma() {
   int cabeza = dibujar_clawd(g, p);
   if (modo == M_ANIM) dibujar_poof(g, fa, (int)p.x, SUELO);
   if (modo == M_TRABAJA && !andando) dibujar_spinner(g, (int)cx + 52, cabeza - 18, ahora, CLAWD);
-  if (modo == M_CARTEL) dibujar_cartel(cabeza, RECORDATORIOS[recordatorio]);
+  if (modo == M_CARTEL) dibujar_cartel(cabeza, T(RECORDATORIOS[recordatorio]));
   dibujar_parts(g);
-  if (texto_bocadillo) bocadillo(g, (int)cx, cabeza - 6, texto_bocadillo, CREMA, OJO);
+  if (texto_bocadillo) bocadillo(g, (int)cx, cabeza - 6, T(texto_bocadillo), CREMA, OJO);
   dibujar_panel();
 
   // ---- LED: siempre fundidos, nada de parpadeos ----
@@ -1799,7 +1829,7 @@ void fotograma_galaxia() {
   g.setTextDatum(middle_center);
   g.setFont(F_TXT);
   g.setTextColor(TXT);
-  g.drawString("Tu vault", 120, 44);
+  g.drawString(T("Tu vault"), 120, 44);
   g.setFont(F_PEQ);
   g.setTextColor(TXT3);
   char txt[48];
@@ -1813,26 +1843,28 @@ void fotograma_galaxia() {
 // ============================================================
 //  El progreso de Claude Code y el aviso grande
 // ============================================================
-// parte un texto en líneas de 'cols' letras sin cortar palabras
+// parte un texto en líneas de 'cols' columnas sin cortar palabras (el chino ocupa 2
+// columnas y no tiene espacios: se corta donde llegue, sin partir ningún carácter)
 int envolver(const String &t, int cols, String *out, int max_lineas) {
-  int n = 0, i = 0;
-  while (i < (int)t.length() && n < max_lineas) {
-    while (i < (int)t.length() && (t[i] == ' ' || t[i] == '\n')) i++;
-    int fin = min((int)t.length(), i + cols);
-    int salto = t.indexOf('\n', i);
-    if (salto >= 0 && salto < fin) fin = salto;
-    else if (fin < (int)t.length()) {
-      int esp = t.lastIndexOf(' ', fin);
-      if (esp > i) fin = esp;
+  int n = 0, i = 0, largo = t.length();
+  while (i < largo && n < max_lineas) {
+    while (i < largo && (t[i] == ' ' || t[i] == '\n')) i++;
+    int j = i, c = 0, ultimo_espacio = -1;
+    while (j < largo && t[j] != '\n') {
+      uint8_t b = t[j];
+      int bytes = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+      int ancho = b >= 0xE3 ? 2 : 1;
+      if (c + ancho > cols) break;
+      if (b == ' ') ultimo_espacio = j;
+      c += ancho;
+      j += bytes;
     }
+    int fin = j;
+    if (j < largo && t[j] != '\n' && ultimo_espacio > i) fin = ultimo_espacio;   // no partir palabras
     out[n++] = t.substring(i, fin);
     i = fin;
   }
-  if (i < (int)t.length() && n > 0) {      // no cabe todo: puntos suspensivos
-    String &u = out[n - 1];
-    if ((int)u.length() > cols - 3) u = u.substring(0, cols - 3);
-    u += "...";
-  }
+  if (i < largo && n > 0) out[n - 1] += "…";                       // no cabe todo
   return n;
 }
 
@@ -1859,7 +1891,7 @@ String recortar(const String &t, int ancho) {
 void fotograma_claude() {
   const bool trabaja = claude_prev == "trabajando", espera = claude_prev == "esperando";
   g.fillScreen(TERM_FONDO);
-  cabecera_claude(mon_proyecto.length() ? mon_proyecto : String("sin sesión"), trabaja, espera, false);
+  cabecera_claude(mon_proyecto.length() ? mon_proyecto : String(T("sin sesión")), trabaja, espera, false);
 
   // estado
   g.setTextDatum(middle_left);
@@ -1876,19 +1908,19 @@ void fotograma_claude() {
   } else if (espera) {
     g.fillRect(12, 77, 6, 6, AMARILLO);
     g.setTextColor(AMARILLO);
-    g.drawString("Te necesita: pide permiso", 26, 80);
+    g.drawString(T("Te necesita: pide permiso"), 26, 80);
   } else if (claude_fin) {
     g.fillRect(12, 77, 6, 6, VERDE);
     g.setTextColor(TXT);
-    g.drawString("Terminado hace " + duracion(ahora - claude_fin), 26, 80);
+    g.drawString(T("Terminado hace ") + duracion(ahora - claude_fin), 26, 80);
   } else {
     g.setTextColor(TXT3);
-    g.drawString("Ahora no está trabajando", 10, 80);
+    g.drawString(T("Ahora no está trabajando"), 10, 80);
   }
   g.setFont(F_PEQ);
   g.setTextColor(TXT3);
-  if (pc_tapa) g.drawString(pc_insomne ? "Tapa cerrada · no se suspende" : "Tapa cerrada", 10, 98);
-  else if (claude_fin && !trabaja && !espera) g.drawString("Ha tardado " + duracion(claude_duro), 26, 98);
+  if (pc_tapa) g.drawString(pc_insomne ? T("Tapa cerrada · no se suspende") : T("Tapa cerrada"), 10, 98);
+  else if (claude_fin && !trabaja && !espera) g.drawString(T("Ha tardado ") + duracion(claude_duro), 26, 98);
 
   // tareas
   int hechas = 0, primera = -1;
@@ -1912,22 +1944,24 @@ void fotograma_claude() {
       else if (t.estado == 1) dibujar_spinner(g, 15, y, ahora, CLAWD, 1);
       else                    g.drawRect(10, y - 4, 8, 8, TXT3);
       g.setTextColor(t.estado == 2 ? TXT3 : (t.estado == 1 ? TXT : TXT2));
+      g.setFont(letra_para(t.txt, F_TXT));
       g.drawString(recortar(t.txt, 202), 26, y);
     }
   } else {
     g.setFont(F_PEQ);
     g.setTextColor(TXT3);
-    g.drawString("Sin lista de tareas", 10, 128);
+    g.drawString(T("Sin lista de tareas"), 10, 128);
   }
 
   // últimos pasos
   g.drawFastHLine(10, 230, 220, BORDE);
   g.setFont(F_PEQ);
   g.setTextColor(TXT3);
-  g.drawString("ÚLTIMOS PASOS", 10, 242);
+  g.drawString(T("ÚLTIMOS PASOS"), 10, 242);
   g.setFont(F_PEQ);
   for (int i = 0; i < MON_ACTS; i++) {
     g.setTextColor(i == MON_ACTS - 1 ? TXT : TXT2);
+    g.setFont(letra_para(mon_acts[i].c_str(), F_PEQ));
     g.drawString(recortar(mon_acts[i], 216), 10, 258 + i * 15);
   }
   brillo_obj = 140;
@@ -1953,7 +1987,7 @@ void dibujar_alerta() {
   g.fillRoundRect(14, 56, 212, 232, 12, SUP);
   g.drawRoundRect(14, 56, 212, 232, 12, mezclar(BORDE, col, k));
   g.drawRoundRect(15, 57, 210, 230, 11, mezclar(SUP, col, k * 0.5f));
-  texto_centrado(g, listo ? "LISTO" : (tiempo ? "TIEMPO" : "TE NECESITO"), 72, L, col);
+  texto_centrado(g, listo ? T("LISTO") : (tiempo ? T("TIEMPO") : T("TE NECESITO")), 72, L, col);
   Pose p;
   p.p = 2; p.x = 120; p.suelo = 150; p.sombra = 0;
   p.ojos = listo ? OJOS_FELICES : OJOS_GRANDES;
@@ -1961,28 +1995,29 @@ void dibujar_alerta() {
   if (listo && (ahora / 520) % 2) p.alto = 4;
   dibujar_clawd(g, p);
   g.setTextDatum(top_center);
-  g.setFont(F_TXT);
+  String titulo_aviso = tiempo ? String(T("Temporizador")) : (mon_proyecto.length() ? mon_proyecto : String("Claude Code"));
+  g.setFont(letra_para(titulo_aviso.c_str(), F_TXT));
   g.setTextColor(TXT);
-  g.drawString(tiempo ? String("Temporizador") : recortar(mon_proyecto.length() ? mon_proyecto : String("Claude Code"), 196), 120, 158);
+  g.drawString(recortar(titulo_aviso, 196), 120, 158);
   g.setFont(F_PEQ);
   if (tiempo) {
     g.setTextColor(TXT2);
-    g.drawString("Han pasado " + duracion(temp_dur * 1000UL) + ".", 120, 184);
+    g.drawString(T("Han pasado ") + duracion(temp_dur * 1000UL) + ".", 120, 184);
   } else if (listo) {
     g.setTextColor(TXT3);
-    g.drawString("ha tardado " + duracion(claude_duro), 120, 176);
+    g.drawString(T("ha tardado ") + duracion(claude_duro), 120, 176);
     String lineas[4];
     int n = envolver(mon_resumen, 30, lineas, 4);
     g.setTextColor(TXT2);
-    for (int i = 0; i < n; i++) g.drawString(lineas[i], 120, 198 + i * 15);
+    for (int i = 0; i < n; i++) texto_mixto(g, lineas[i], 120, 198 + i * 15, F_PEQ, top_center);
   } else {
     g.setTextColor(TXT2);
-    g.drawString("Te pide permiso en la terminal.", 120, 184);
+    g.drawString(T("Te pide permiso en la terminal."), 120, 184);
     g.setTextColor(TXT3);
-    g.drawString(pc_tapa ? "Abre el portátil" : "Mira la pantalla del PC", 120, 202);
+    g.drawString(pc_tapa ? T("Abre el portátil") : T("Mira la pantalla del PC"), 120, 202);
   }
   g.setTextColor(TXT3);
-  g.drawString("Toca para cerrar", 120, 266);
+  g.drawString(T("Toca para cerrar"), 120, 266);
   g.setTextDatum(top_left);
 }
 
@@ -2007,7 +2042,7 @@ void temp_empezar(uint32_t segundos) {
   temp = T_CORRIENDO;
   despertar(false);
   SONAR(S_POMO_INI);
-  aviso("Temporizador: " + duracion(segundos * 1000UL));
+  aviso(T("Temporizador: ") + duracion(segundos * 1000UL));
 }
 
 void temp_cancelar() {
@@ -2022,7 +2057,7 @@ void temp_actualizar() {
     temp_prox_pitido = ahora;
     alerta = AL_TIEMPO;
     despertar(false);
-    notificar(2, "Se acabó el tiempo", "Temporizador de " + duracion(temp_dur * 1000UL));
+    notificar(2, T("Se acabó el tiempo"), T("Temporizador de ") + duracion(temp_dur * 1000UL));
   }
   if (temp == T_SONANDO) {
     if (alerta != AL_TIEMPO) { temp = T_PARADO; return; }          // lo has cerrado
@@ -2095,7 +2130,7 @@ void dibujar_reloj() {
   g.setFont(F_GRANDE);
   g.setTextDatum(middle_left);
   g.setTextColor(TXT);
-  g.drawString("Temporizador", 14, 44);
+  g.drawString(T("Temporizador"), 14, 44);
   patron(g, ICO_CERRAR, 5, 212, 39, 2, TXT2);   // la X para cerrar
 
   const bool corre = temp == T_CORRIENDO || temp == T_PAUSA;
@@ -2117,7 +2152,7 @@ void dibujar_reloj() {
     g.setFont(F_PEQ);
     g.setTextDatum(middle_center);
     g.setTextColor(TXT3);
-    g.drawString(temp == T_PAUSA ? "en pausa" : "quedan", RUEDA_X, RUEDA_Y + 22);
+    g.drawString(temp == T_PAUSA ? T("en pausa") : T("quedan"), RUEDA_X, RUEDA_Y + 22);
   } else {
     // eligiendo: la esfera con sus números (horas 0-11 o minutos de 5 en 5)
     uint32_t h = temp_dur / 3600, m = temp_dur / 60 % 60;
@@ -2151,16 +2186,16 @@ void dibujar_reloj() {
     g.setFont(F_PEQ);
     g.setTextDatum(middle_center);
     g.setTextColor(TXT3);
-    g.drawString(rueda_modo == 0 ? "horas" : "minutos", RUEDA_X, RUEDA_Y + 22);
+    g.drawString(rueda_modo == 0 ? T("horas") : T("minutos"), RUEDA_X, RUEDA_Y + 22);
   }
 
   // botones
   if (temp == T_PARADO) {
-    boton(10, RJ_BOT_Y, 106, RJ_BOT_H, pomo == POMO_NO ? "Pomodoro" : "Sin pomodoro", false);
-    boton(124, RJ_BOT_Y, 106, RJ_BOT_H, "Empezar", temp_dur > 0);
+    boton(10, RJ_BOT_Y, 106, RJ_BOT_H, pomo == POMO_NO ? T("Pomodoro") : T("Sin pomodoro"), false);
+    boton(124, RJ_BOT_Y, 106, RJ_BOT_H, T("Empezar"), temp_dur > 0);
   } else {
-    boton(10, RJ_BOT_Y, 106, RJ_BOT_H, "Cancelar", false);
-    boton(124, RJ_BOT_Y, 106, RJ_BOT_H, temp == T_PAUSA ? "Seguir" : "Pausar", true);
+    boton(10, RJ_BOT_Y, 106, RJ_BOT_H, T("Cancelar"), false);
+    boton(124, RJ_BOT_Y, 106, RJ_BOT_H, temp == T_PAUSA ? T("Seguir") : T("Pausar"), true);
   }
   g.setTextDatum(top_left);
 }
@@ -2178,7 +2213,7 @@ void reloj_toque(int x, int y) {
     if (temp == T_PARADO) {
       if (izq) {
         if (pomo == POMO_NO) { empezar_pomodoro(); reloj_abierto = false; }
-        else { pomo = POMO_NO; aviso("Pomodoro cancelado"); }
+        else { pomo = POMO_NO; aviso(T("Pomodoro cancelado")); }
       } else if (temp_dur > 0) {
         temp_empezar(temp_dur);
       }
@@ -2207,7 +2242,7 @@ void permiso_toque(int x, int y) {
   pc_enviar_linea(b);
   perm_activo = false;
   if (ok) SONAR(S_SALTO); else SONAR(S_CLIC);
-  aviso(ok ? "Permiso concedido" : "Permiso denegado");
+  aviso(ok ? T("Permiso concedido") : T("Permiso denegado"));
 }
 
 void dibujar_permiso() {
@@ -2220,23 +2255,23 @@ void dibujar_permiso() {
   float k = 0.5f + 0.5f * sinf(ahora / 380.0f);
   g.fillRoundRect(10, 40, 220, 262, 12, SUP);
   g.drawRoundRect(10, 40, 220, 262, 12, mezclar(BORDE, AMARILLO, k));
-  texto_centrado(g, "PERMISO", 52, L, AMARILLO);
+  texto_centrado(g, T("PERMISO"), 52, L, AMARILLO);
   g.setTextDatum(top_center);
   g.setFont(F_TXT);
   g.setTextColor(TXT);
-  g.drawString("Claude quiere usar " + perm_herr, 120, 84);
+  g.drawString(T("Claude quiere usar ") + perm_herr, 120, 84);
   g.setFont(F_PEQ);
   g.setTextColor(TXT3);
-  g.drawString(recortar("en " + perm_proy, 200), 120, 102);
+  g.drawString(recortar(T("en ") + perm_proy, 200), 120, 102);
   // lo que quiere hacer, tal cual (en monoespaciada, como en la terminal)
   g.fillRoundRect(20, 122, 200, 110, 8, FONDO);
   String lineas[6];
   int n = envolver(perm_det, 31, lineas, 6);
   g.setTextDatum(top_left);
   g.setTextColor(TXT2);
-  for (int i = 0; i < n; i++) g.drawString(lineas[i], 28, 130 + i * 16);
-  boton(20, PM_BOT_Y, 96, PM_BOT_H, "Denegar", false);
-  boton(124, PM_BOT_Y, 96, PM_BOT_H, "Permitir", true);
+  for (int i = 0; i < n; i++) texto_mixto(g, lineas[i], 28, 130 + i * 16, F_PEQ, top_left);
+  boton(20, PM_BOT_Y, 96, PM_BOT_H, T("Denegar"), false);
+  boton(124, PM_BOT_Y, 96, PM_BOT_H, T("Permitir"), true);
   g.setTextDatum(top_left);
 }
 
@@ -2284,22 +2319,25 @@ void dibujar_cortina() {
   g.setTextDatum(top_right);
   g.setFont(F_PEQ);
   g.setTextColor(TXT2);
-  g.drawString(pc_dia.length() ? pc_dia : String("--"), 230, oy + 14);
+  g.drawString(pc_dia.length() ? pc_dia : String("--"), 192, oy + 14);
   if (pc_bat >= 0) {
     g.setTextColor(pc_carga ? VERDE : TXT3);
-    g.drawString(String(pc_bat) + " %" + (pc_carga ? " · cargando" : ""), 230, oy + 30);
+    g.drawString(String(pc_bat) + " %" + (pc_carga ? T(" · cargando") : ""), 192, oy + 30);
   }
+  g.fillRoundRect(200, oy + 10, 32, 32, 8, SUP);                 // ⚙ Ajustes
+  g.drawRoundRect(200, oy + 10, 32, 32, 8, BORDE);
+  patron(g, ICO_AJUSTES, 7, 209, oy + 19, 2, TXT2);
 
   // los 8 interruptores
   bool t_activo = temp != T_PARADO || pomo != POMO_NO;
-  interruptor(0, oy, !audio_mudo, audio_mudo ? ICO_ALTAVOZ_NO : ICO_ALTAVOZ, 7, 9, "Sonido");
-  interruptor(1, oy, !mic_mudo, ICO_MICRO, 8, 7, "Micro");
-  interruptor(2, oy, no_molestar, ICO_DND, 7, 7, "No molestar");
-  interruptor(3, oy, durmiendo, ICO_ZZ, 6, 7, "Dormir");
-  interruptor(4, oy, t_activo, ICO_RELOJ, 7, 7, "Tiempo");
-  interruptor(5, oy, oye_on, ICO_ONDA, 5, 9, "Oye Clawd");
-  interruptor(6, oy, habla_on, ICO_HABLA, 7, 7, "Habla");
-  interruptor(7, oy, carteles_on, ICO_CAMPANA, 6, 7, "Carteles");
+  interruptor(0, oy, !audio_mudo, audio_mudo ? ICO_ALTAVOZ_NO : ICO_ALTAVOZ, 7, 9, T("Sonido"));
+  interruptor(1, oy, !mic_mudo, ICO_MICRO, 8, 7, T("Micro"));
+  interruptor(2, oy, no_molestar, ICO_DND, 7, 7, T("No molestar"));
+  interruptor(3, oy, durmiendo, ICO_ZZ, 6, 7, T("Dormir"));
+  interruptor(4, oy, t_activo, ICO_RELOJ, 7, 7, T("Tiempo"));
+  interruptor(5, oy, oye_on, ICO_ONDA, 5, 9, T("Oye Clawd"));
+  interruptor(6, oy, habla_on, ICO_HABLA, 7, 7, T("Habla"));
+  interruptor(7, oy, carteles_on, ICO_CAMPANA, 6, 7, T("Carteles"));
   if (mic_mudo) patron(g, ICO_TACHON, 8, 60 + 8 + 15, oy + CT_FILA1 + 12, 2, TXT3);
 
   // brillo y volumen
@@ -2314,7 +2352,7 @@ void dibujar_cortina() {
     g.setFont(F_PEQ);
     g.setTextColor(TXT3);
     g.setTextDatum(middle_center);
-    g.drawString("Sin avisos", 120, ya + 17);
+    g.drawString(T("Sin avisos"), 120, ya + 17);
   } else {
     const Notif &nt = notifs[0];
     g.fillRect(18, ya + 14, 6, 6, nt.tipo == 0 ? VERDE : (nt.tipo == 1 ? AMARILLO : TXT2));
@@ -2324,12 +2362,12 @@ void dibujar_cortina() {
     if (n_notifs > 1) {
       g.setTextDatum(middle_right);
       g.setTextColor(TXT3);
-      g.drawString("+" + String(n_notifs - 1) + " ›", 224, ya + 17);
+      g.drawString("+" + String(n_notifs - 1) + " >", 224, ya + 17);
     }
   }
 
   // dock: las 5 pantallas
-  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", "Voz", "Vault", "Juegos"};
+  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos")};
   int yd = oy + CT_DOCK;
   for (int i = 0; i < N_PANTALLAS; i++) {
     int cxs = i * DOCK_W + DOCK_W / 2;
@@ -2351,11 +2389,52 @@ void dibujar_cortina() {
   g.setTextDatum(top_left);
 }
 
+// ---- Ajustes: el idioma ----
+void poner_idioma(Idioma i) {
+  idioma = i;
+  letras_para(i);
+  ajustes.putUChar("idioma", i);
+  char b[24];
+  snprintf(b, sizeof(b), "idioma:%s", CODIGO_IDIOMA[i]);
+  pc_enviar(b);
+}
+
+void ajustes_toque(int x, int y) {
+  SONAR(S_CLIC);
+  if (y < 64 && x > 190) { ajustes_abierto = false; return; }   // la X
+  if (y >= 96 && y < 96 + 4 * 44) poner_idioma((Idioma)((y - 96) / 44));
+}
+
+void dibujar_ajustes() {
+  if (!ajustes_abierto) return;
+  g.fillRect(0, BARRA_H, 240, 320 - BARRA_H, FONDO);
+  g.setFont(F_GRANDE);
+  g.setTextDatum(middle_left);
+  g.setTextColor(TXT);
+  g.drawString(T("Ajustes"), 14, 44);
+  patron(g, ICO_CERRAR, 5, 212, 39, 2, TXT2);
+  g.setFont(F_PEQ);
+  g.setTextColor(TXT3);
+  g.drawString(T("Idioma"), 14, 80);
+  for (int i = 0; i < 4; i++) {
+    int y = 96 + i * 44;
+    bool sel = i == (int)idioma;
+    g.fillRoundRect(8, y, 224, 38, 8, sel ? SUP2 : SUP);
+    g.drawRoundRect(8, y, 224, 38, 8, sel ? TXT3 : BORDE);
+    // cada idioma con una letra que tenga sus caracteres
+    g.setFont(i == ZH ? (const lgfx::IFont *)&fonts::efontCN_14 : (const lgfx::IFont *)&fonts::efontJA_14);
+    g.setTextColor(sel ? TXT : TXT2);
+    g.drawString(NOMBRE_IDIOMA[i], 22, y + 19);
+    if (sel) patron(g, ICO_HECHA, 4, 206, y + 15, 2, TXT);
+  }
+  g.setTextDatum(top_left);
+}
+
 // ---- la lista completa de avisos ----
 void avisos_toque(int x, int y) {
   SONAR(S_CLIC);
   if (y < 64 && x > 190) { avisos_abierto = false; return; }                        // la X
-  if (y >= 278) { n_notifs = 0; avisos_abierto = false; aviso("Avisos borrados"); return; }   // "Borrar todo"
+  if (y >= 278) { n_notifs = 0; avisos_abierto = false; aviso(T("Avisos borrados")); return; }   // T("Borrar todo")
   if (y >= 70 && y < 70 + n_notifs * 34) {                                          // un aviso de Claude: ver el progreso
     if (notifs[(y - 70) / 34].tipo != 2) ir_a_pantalla_n(PANT_CLAUDE, 1);
     avisos_abierto = false;
@@ -2368,7 +2447,7 @@ void dibujar_avisos() {
   g.setFont(F_GRANDE);
   g.setTextDatum(middle_left);
   g.setTextColor(TXT);
-  g.drawString("Avisos", 14, 44);
+  g.drawString(T("Avisos"), 14, 44);
   patron(g, ICO_CERRAR, 5, 212, 39, 2, TXT2);
   for (int i = 0; i < n_notifs; i++) {
     const Notif &nt = notifs[i];
@@ -2381,15 +2460,15 @@ void dibujar_avisos() {
     g.drawString(recortar(nt.titulo, 130), 32, y + 15);
     g.setTextDatum(middle_right);
     g.setTextColor(TXT3);
-    g.drawString("hace " + duracion(ahora - nt.t), 224, y + 15);
+    g.drawString(T("hace ") + duracion(ahora - nt.t), 224, y + 15);
   }
   if (n_notifs == 0) {
     g.setFont(F_PEQ);
     g.setTextDatum(middle_center);
     g.setTextColor(TXT3);
-    g.drawString("Sin avisos", 120, 120);
+    g.drawString(T("Sin avisos"), 120, 120);
   }
-  boton(8, 278, 224, 32, "Borrar todo", false);
+  boton(8, 278, 224, 32, T("Borrar todo"), false);
   g.setTextDatum(top_left);
 }
 
@@ -2443,6 +2522,8 @@ void setup() {
   habla_on = ajustes.getBool("habla", true);
   oye_on = ajustes.getBool("oye", true);
   carteles_on = ajustes.getBool("carteles", true);
+  idioma = (Idioma)constrain(ajustes.getUChar("idioma", ES), 0, 3);
+  letras_para(idioma);
   motivo_arranque = esp_reset_reason();
   miga_anterior = motivo_arranque == ESP_RST_POWERON ? 0 : miga;
 
@@ -2502,6 +2583,7 @@ void loop() {
   // capas comunes, encima de cualquier pantalla
   dibujar_reloj();
   dibujar_avisos();
+  dibujar_ajustes();
   dibujar_barra_arriba();
   dibujar_indicador();
   dibujar_alerta();
