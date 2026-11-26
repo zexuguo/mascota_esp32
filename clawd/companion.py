@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -80,6 +80,11 @@ def log(*a):
 def ascii_pantalla(texto: str) -> str:
     """Prepara texto para la pantalla: la letra de la placa tiene tildes y ñ,
     pero no emojis ni símbolos raros; y fuera el markdown."""
+    if re.search(r"[\u4e00-\u9fff]", texto):
+        # la letra de la placa (efontCN) solo trae chino SIMPLIFICADO: lo tradicional
+        # (que a veces escribe Whisper) saldría en cuadraditos -> pasarlo a simplificado
+        from zhconv import convert
+        texto = convert(texto, "zh-cn")
     for a, b in {"“": '"', "”": '"', "‘": "'", "’": "'", "—": "-", "–": "-", "→": "->", "•": "·"}.items():
         texto = texto.replace(a, b)
     texto = re.sub(r"[*_`#]+", "", texto)
@@ -524,6 +529,13 @@ class Companion:
         segs, info = self.whisper.transcribe(muestras, language=None, **opciones)
         if info.language not in I.IDIOMAS:
             segs, info = self.whisper.transcribe(muestras, language=ui, **opciones)
+        elif info.language != ui:
+            # otro idioma de los buenos: repetir con SU vocabulario (con la pista en español,
+            # el chino salía en tradicional y con errores: "计时器" -> "G17"). Solo se ha
+            # detectado el idioma, aún no se ha transcrito nada: casi no cuesta.
+            lang = info.language
+            segs, info = self.whisper.transcribe(muestras, language=lang, vad_filter=True,
+                                                 initial_prompt=I.PISTA[lang])
         self.idioma = info.language
         if info.language != ui:
             log("Idioma detectado:", I.NOMBRE[info.language])
