@@ -1,0 +1,6 @@
+{
+  "sobremesa_ip": "100.x.y.z",
+  "sobremesa_mac": "aa:bb:cc:dd:ee:ff",
+  "sobremesa_ssh": "usuario@sobremesa",
+  "chess_usuario": "tu_usuario_de_chess_com"
+}

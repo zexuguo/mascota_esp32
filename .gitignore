@@ -1,0 +1,11 @@
+# Compilaciones de PlatformIO (pesan cientos de MB y se regeneran solas)
+.pio/
+.vscode/
+compile_commands.json
+
+# Python (pc-companion)
+__pycache__/
+.venv/
+
+# Copias del firmware: binarios grandes, se guardan en local, no en GitHub
+backup/*.bin
