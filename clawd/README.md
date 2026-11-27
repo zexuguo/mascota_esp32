@@ -137,7 +137,7 @@ Cortina → **Temporiz.**, o por voz: "pon un temporizador de diez minutos", "av
 Lo que queda se ve en la barra de arriba. Al acabar: aviso "TIEMPO", LED y alarma — **suena aunque el sonido
 esté en silencio** (un temporizador que no suena no sirve), como mucho 1 minuto. Tócalo para pararla.
 
-## "Oye Clawd" y la voz de Clawd
+## "Oye Clawd" (en mejora) y la voz de Clawd
 - **Oye Clawd** (cortina): la placa solo manda audio al PC cuando nota voz (punto verde en la barra mientras lo hace).
   El PC lo pasa a texto en local y **solo hace caso si empieza por "Oye Clawd"** (o "Clawd" / "Claude");
   si no, lo tira sin guardarlo. "Oye Clawd, pon un temporizador de 5 minutos" lo hace directamente;
