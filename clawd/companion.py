@@ -42,6 +42,7 @@ import serial
 
 import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
 import ajedrez as AJ          # revisión de partidas de chess.com (ajedrez.py, al lado)
+import trading as TR          # el bot de trading, solo lectura (trading.py, al lado)
 import config_local as CFG    # IPs, MAC y usuarios: fuera del repo (ver config_local.py)
 IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
 
@@ -515,6 +516,9 @@ class Companion:
         elif ev == "voz_auto_fin" and self.grabacion == "auto":
             audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev and ev.startswith("tr:"):            # la pantalla del bot pide un par: "tr:ETH/USDC:4H"
+            _, nombre, bar = (ev.split(":") + ["1H"])[:3]
+            threading.Thread(target=self.trading_par, args=(nombre, bar), daemon=True).start()
         elif ev == "sobremesa:encender":
             self.encender_sobremesa()
         elif ev == "aj:resumen" and self.aj:
@@ -971,6 +975,31 @@ class Companion:
                         pass
         log("Sobremesa: paquete de encendido enviado")
 
+    # --- el bot de trading (solo lectura): resumen para el panel y un par para la gráfica ---
+    def trading_par(self, nombre: str, bar: str):
+        if nombre not in TR.PARES or not TR.disponible():
+            return
+        try:
+            self.enviar({"tr": TR.par(nombre, bar)})
+        except Exception as e:                         # sin red: la placa enseña lo último que tenga
+            log("trading: no pude leer", nombre, e)
+            self.enviar({"tr": {"par": nombre, "bar": bar, "err": "sin red"}})
+
+    def vigilar_trading(self):
+        if not TR.disponible():
+            return                                     # sin el bot en este PC: no hay nada que enseñar
+        while True:
+            try:
+                precios = {}
+                for p in TR.PARES:
+                    v = TR.velas(p)
+                    if v:
+                        precios[p] = v[-1][4]
+                self.enviar({"tr_res": TR.resumen(precios)})
+            except Exception as e:
+                log("trading: resumen fallido:", e)
+            time.sleep(60)
+
     def vigilar_sobremesa(self):
         if not self.SOBREMESA_IP:
             return                                     # sin configurar: no hay sobremesa que vigilar
@@ -1062,6 +1091,7 @@ class Companion:
         threading.Thread(target=self.vigilar, daemon=True).start()
         threading.Thread(target=self.vigilar_ajedrez, daemon=True).start()
         threading.Thread(target=self.vigilar_sobremesa, daemon=True).start()
+        threading.Thread(target=self.vigilar_trading, daemon=True).start()
         avisado = False
         while True:
             try:

@@ -190,6 +190,23 @@ const Trad TRAD[] = {
   {"Respira hondo", "Breathe deeply", "深呼吸", "Respira fondo"},
   {"Espalda recta!", "Sit up straight!", "坐直!", "Esquena recta!"},
   {"Bien hecho!", "Well done!", "做得好!", "Ben fet!"},
+  // ---- bot de trading (trading.h) ----
+  {"Bot", "Bot", "交易机器人", "Bot"},
+  {"parado", "stopped", "已停止", "aturat"},
+  {" abierta", " open", " 持仓", " oberta"},
+  {"velas 4 h · 8 días · toca: 1 h", "4 h candles · 8 days · tap: 1 h", "4小时K线 · 8天 · 点击: 1小时", "espelmes 4 h · 8 dies · toca: 1 h"},
+  {"velas 1 h · 2 días · toca: 4 h", "1 h candles · 2 days · tap: 4 h", "1小时K线 · 2天 · 点击: 4小时", "espelmes 1 h · 2 dies · toca: 4 h"},
+  {"COMPRAR", "BUY", "买入", "COMPRAR"},
+  {"VENDER", "SELL", "卖出", "VENDRE"},
+  {"ESPERAR", "WAIT", "等待", "ESPERAR"},
+  {"Claude decidió", "Claude decided", "Claude 决定", "Claude va decidir"},
+  {"Sin datos: ", "No data: ", "没有数据: ", "Sense dades: "},
+  {"Cargando…", "Loading…", "加载中…", "Carregant…"},
+  {"dentro · ", "in · ", "持仓 · ", "dins · "},
+  {"espera a ", "waits for ", "等待 ", "espera a "},
+  {"fuera", "out", "空仓", "fora"},
+  {"Total", "Total", "总计", "Total"},
+  {"% aciertos", "% wins", "% 胜率", "% encerts"},
 };
 
 const char *T(const char *es) {

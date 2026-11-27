@@ -211,7 +211,8 @@ String sm_modelo;
 int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
 
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
-enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS };
+// PANT_TRADING va al final y fuera del dock: se abre tocando la página "Bot" del panel
+enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_TRADING };
 Pantalla pantalla = PANT_MASCOTA;
 
 // ---------- Monitor de Claude Code (lo que hace en el PC) ----------
@@ -408,6 +409,15 @@ void ajustes_toque(int x, int y);
 void poner_idioma(Idioma i);
 void reloj_toque(int x, int y);
 void aj_recibir_resumen(JsonObject a);
+// en trading.h (el bot de trading)
+extern bool tr_conocido, tr_4h;
+extern int tr_sel, tr_nv;
+void tr_recibir_resumen(JsonObject o);
+void tr_recibir(JsonObject o);
+void tr_panel(String &val, float &frac, uint16_t &col);
+void abrir_trading();
+void trading_toque(int x, int y);
+void fotograma_trading();
 void aj_recibir_ply(JsonObject p);
 void ajedrez_toque(int x, int y);
 extern uint8_t aj_estado;
@@ -542,6 +552,8 @@ void al_mensaje(JsonDocument &doc) {
     sm_vram_max = max(1, (int)(o["vram_max"] | 1));
   }
   if (doc["aj"].is<JsonObject>()) aj_recibir_resumen(doc["aj"]);       // ajedrez: el resumen
+  if (doc["tr_res"].is<JsonObject>()) tr_recibir_resumen(doc["tr_res"]);   // bot de trading: resumen
+  if (doc["tr"].is<JsonObject>()) tr_recibir(doc["tr"]);                 // bot de trading: un par
   if (doc["aj_ply"].is<JsonObject>()) aj_recibir_ply(doc["aj_ply"]);  // ajedrez: una jugada
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
 }
@@ -590,9 +602,14 @@ void al_tocar(int x, int y) {
     SONAR(S_CLIC);
     return;
   }
+  if (y > PANEL_Y && pagina == 4) {              // el bot de trading: abrir su gráfica
+    abrir_trading();
+    return;
+  }
   if (y > PANEL_Y) {                             // panel: siguiente página
-    pagina = (pagina + 1) % 4;
-    if (pagina == 3 && !sm_conocido) pagina = 0;
+    pagina = (pagina + 1) % 5;
+    if (pagina == 3 && !sm_conocido) pagina = 4;
+    if (pagina == 4 && !tr_conocido) pagina = 0;
     prox_pagina = ahora + 12000;
     SONAR(S_CLIC);
     return;
@@ -669,6 +686,10 @@ void cmd_local(const String &c) {
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
   else if (c.startsWith("aj:ir:")) { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
   else if (c == "aj:resumen") { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 0; }
+  else if (c.startsWith("trading")) {             // pruebas: "trading", "trading:0" (BTC), "trading:2:1H" (SOL en 1 h)
+    if (c.length() > 8) { tr_sel = constrain(c.substring(8, 9).toInt(), 0, 2); tr_4h = !c.endsWith(":1H"); tr_nv = 0; }
+    abrir_trading();
+  }
   else if (c == "sobremesa:encender") { pantalla = PANT_MASCOTA; encender_sobremesa(); }   // = tocar "apagado · toca"
   else if (c.startsWith("panel:")) { pagina = c.substring(6).toInt(); prox_pagina = ahora + 20000; }   // pruebas
   else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
@@ -921,7 +942,8 @@ void leer_tactil() {
       cortina = constrain(cortina_ini + dy / 240.0f, 0.0f, 1.0f);
     }
     if (gesto == G_DESLIZAR && abs(dx) > 55 && !jugando) {
-      ir_a_pantalla(dx < 0 ? 1 : -1);       // hacia la izquierda = siguiente, como en el móvil
+      if (pantalla == PANT_TRADING) { ir_a_pantalla_n(PANT_MASCOTA, dx < 0 ? 1 : -1); SONAR(S_CLIC); }   // no está en el dock
+      else ir_a_pantalla(dx < 0 ? 1 : -1);  // hacia la izquierda = siguiente, como en el móvil
       gesto = G_NADA;
     }
     if (gesto == G_ARRASTRAR && pantalla == PANT_TERMINAL) {
@@ -969,6 +991,7 @@ void leer_tactil() {
       else if (ty0 < BARRA_H) { cortina_obj = 1; SONAR(S_CLIC); }   // tocar la barra: abre la cortina
       else if (pantalla == PANT_MASCOTA) al_tocar(tx0, ty0);
       else if (pantalla == PANT_JUEGOS && juego == J_AJEDREZ) ajedrez_toque(tx0, ty0);
+      else if (pantalla == PANT_TRADING) trading_toque(tx0, ty0);
       else if (pantalla != PANT_JUEGOS) al_tocar_terminal(tx0, ty0);
     }
     gesto = G_NADA;
@@ -1428,9 +1451,10 @@ void dibujar_panel() {
 
   if (sm_encendiendo && ahora - sm_encendiendo > 90000) sm_encendiendo = 0;   // no ha arrancado: se rinde
   if (ahora > prox_pagina) {
-    pagina = (pagina + 1) % 4;
+    pagina = (pagina + 1) % 5;
     if (pagina == 2 && pc_bat < 0) pagina = 3;   // sin batería, se la salta
-    if (pagina == 3 && !sm_conocido) pagina = 0; // el sobremesa, cuando el companion ya lo ha mirado
+    if (pagina == 3 && !sm_conocido) pagina = 4; // el sobremesa, cuando el companion ya lo ha mirado
+    if (pagina == 4 && !tr_conocido) pagina = 0; // el bot de trading, si está en este PC
     prox_pagina = ahora + 7000;
   }
   if (!pc_conectado()) {
@@ -1465,6 +1489,12 @@ void dibujar_panel() {
       String val = sm_gpu >= 0 ? modelo + " · " + String(sm_temp) + "°C" : modelo;
       fila_dato(T("Sobremesa"), val, (float)sm_vram / sm_vram_max,
                 sm_temp >= 80 ? ROJO : (sm_modelo.length() ? VERDE : TXT2));
+      break;
+    }
+    case 4: {                                      // el bot de trading: resultado y si hay algo abierto
+      String val; float frac; uint16_t col;
+      tr_panel(val, frac, col);
+      fila_dato(T("Bot"), val, frac, col);
       break;
     }
     case 2:
@@ -2337,6 +2367,7 @@ void dibujar_permiso() {
 }
 
 #include "ajedrez.h"
+#include "trading.h"
 
 // ============================================================
 //  La cortina (se dibuja encima de todo)
@@ -2642,6 +2673,7 @@ void loop() {
   else if (pantalla == PANT_CLAUDE) fotograma_claude();
   else if (pantalla == PANT_GALAXIA) fotograma_galaxia();
   else if (pantalla == PANT_JUEGOS) fotograma_juegos();
+  else if (pantalla == PANT_TRADING) fotograma_trading();
   else fotograma_terminal();
 
   // capas comunes, encima de cualquier pantalla
