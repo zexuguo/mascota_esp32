@@ -599,11 +599,13 @@ class Companion:
             log("orden.json no vale:", e)
             pasos = []
         f.unlink(missing_ok=True)
+        hubo_prueba_tr = False
         for p in pasos:
             if "cmd" in p:
                 self.enviar({"cmd": p["cmd"]})
             if "enviar" in p:
                 self.enviar(p["enviar"])
+                hubo_prueba_tr |= "trp" in p["enviar"]
             if "esperar" in p:
                 time.sleep(float(p["esperar"]))
             if "decir" in p:
@@ -613,6 +615,10 @@ class Companion:
                          "url": "x/prueba", "white": {"username": AJ.USUARIO, "result": "win"},
                          "black": {"username": "prueba", "result": "lose"}, "time_class": "prueba"}
                 self.ajedrez_analizar(juego, nuevo=True, guardar=False)
+        # una prueba con datos inventados de Trade Republic: devolver en el acto los reales,
+        # para que nunca se queden en la placa unas posiciones que no son de zexu
+        if hubo_prueba_tr and getattr(self, "trp_ultimo", None):
+            self.enviar({"trp": self.trp_ultimo})
 
     # --- voz -> texto ---
     def transcribir(self, audio: bytes, guardar: bool = True, pista: bool = True) -> str:
@@ -1033,6 +1039,7 @@ class Companion:
             except Exception as e:
                 log("Trade Republic: no pude leer la cartera:", e)
                 ultimo = {"ok": 0, "err": "error al leer (ver el registro)"}
+            self.trp_ultimo = ultimo
             self.enviar({"trp": ultimo})
             time.sleep(300 if ultimo.get("ok") else 60)
 

@@ -9,3 +9,52 @@ __pycache__/
 
 # Copias del firmware: binarios grandes, se guardan en local, no en GitHub
 backup/*.bin
+
+# ------------------------------------------------------------
+# PELIGROSO: datos privados que nunca deben llegar a GitHub (el repo es público)
+# ------------------------------------------------------------
+# Configuración con IPs, MAC y usuarios. La de verdad vive en ~/.config/clawd/;
+# esto es por si alguien la copia dentro del repo. La plantilla sí se sube.
+config.json
+config.local.*
+*.local.json
+!config.ejemplo.json
+
+# Contraseñas, tokens y claves (WiFi, APIs, SSH, certificados)
+.env
+.env.*
+secrets.h
+secretos.h
+credenciales*
+*secret*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Grabaciones de voz y lo que escucha el micro de la placa (tu voz, tu casa)
+*.wav
+*.mp3
+*.ogg
+*.flac
+
+# Registros, estado y capturas de la placa (pueden llevar conversaciones, rutas, permisos)
+*.log
+estado*.json
+capturas/
+
+# Copias de seguridad del repo (la de antes de limpiar lleva la IP y la MAC)
+*.bundle
+*.bak
+*~
+
+# Trade Republic y finanzas: la sesión (cookies), la historia del valor y cualquier volcado
+# de la cartera viven en ~/.local/state/clawd/traderepublic/. Esto es por si alguien los copia aquí.
+cookies*
+*cookies*.txt
+traderepublic/
+historia*.json
+*.jsonl
+.pytr/
