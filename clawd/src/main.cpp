@@ -211,7 +211,7 @@ String sm_modelo;
 int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
 
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
-// PANT_TRADING va al final y fuera del dock: se abre tocando la página "Bot" del panel
+// PANT_TRADING: el bot de trading (6.º icono del dock, o tocando la página "Bot" del panel)
 enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_TRADING };
 Pantalla pantalla = PANT_MASCOTA;
 
@@ -421,6 +421,7 @@ void tr_recibir_op(JsonObject o);
 void tr_recibir_opt(JsonObject o);
 void tr_abrir_tabla();
 void tr_abrir_ficha(int n);
+void tr_volver_grafica();
 void tr_panel(String &val, float &frac, uint16_t &col);
 void abrir_trading();
 void trading_toque(int x, int y);
@@ -678,7 +679,7 @@ void cmd_local(const String &c) {
   else if (c == "claude")    { pantalla = PANT_CLAUDE; }
   else if (c == "captura")   { pedir_captura = true; }
 
-  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, 4); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
+  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, (int)PANT_TRADING); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
   else if (c == "cortina")   { cortina_obj = cortina_obj > 0.5f ? 0 : 1; }
   else if (c == "escuchar")  { if (voz == VOZ_NO) { voz_empezar(false); voz_auto = true; voz_ultimo_sonido = ahora; } }
   else if (c == "reloj")     { reloj_abierto = true; cortina_obj = 0; rueda_modo = 0; }
@@ -760,7 +761,7 @@ enum Gesto { G_NADA, G_DUDA, G_DESLIZAR, G_ARRASTRAR, G_MANTENER, G_CORTINA, G_B
 Gesto gesto = G_NADA;
 uint32_t fallos_tactil = 0;                 // lecturas seguidas sin dedo
 uint32_t indicador_hasta = 0;               // puntitos de "en qué pantalla estás"
-const int N_PANTALLAS = 5;
+const int N_PANTALLAS = 6;
 const int DOCK_W = 240 / N_PANTALLAS;       // ancho de cada icono del dock de la cortina
 const int BARRA_H = 24;                     // la barra de estado de arriba
 
@@ -781,6 +782,7 @@ void ir_a_pantalla_n(int n, int dir) {
   pantalla = (Pantalla)n;
   if (pantalla == PANT_JUEGOS) { juego = J_MENU; fase = F_LISTO; }
   if (pantalla == PANT_GALAXIA) gal_desde = ahora;
+  if (pantalla == PANT_TRADING) { tr_volver_grafica(); interaccion(); }
   term_actividad = ahora;
   term_scroll = 0;
   indicador_hasta = ahora + 1200;
@@ -957,8 +959,7 @@ void leer_tactil() {
       cortina = constrain(cortina_ini + dy / 240.0f, 0.0f, 1.0f);
     }
     if (gesto == G_DESLIZAR && abs(dx) > 55 && !jugando) {
-      if (pantalla == PANT_TRADING) { ir_a_pantalla_n(PANT_MASCOTA, dx < 0 ? 1 : -1); SONAR(S_CLIC); }   // no está en el dock
-      else ir_a_pantalla(dx < 0 ? 1 : -1);  // hacia la izquierda = siguiente, como en el móvil
+      ir_a_pantalla(dx < 0 ? 1 : -1);       // hacia la izquierda = siguiente, como en el móvil
       gesto = G_NADA;
     }
     if (gesto == G_ARRASTRAR && pantalla == PANT_TERMINAL) {
@@ -1288,6 +1289,7 @@ const char *const ICO_HABLA[]   = {"XXXXXXX", "X.....X", "X.X.X.X", "X.....X", "
 const char *const ICO_CAMPANA[] = {"...X...", "..XXX..", ".XXXXX.", ".XXXXX.", "XXXXXXX", "...X..."};
 const char *const ICO_TERM[]   = {"X.......", ".X......", "..X.....", ".X......", "X...XXXX"};
 const char *const ICO_GALAX[]  = {"...X.....", "..XXX....", ".XXXXX..X", "..XXX..XXX", "...X....X."};   // estrellas
+const char *const ICO_VELAS[]  = {"......X.", "..X..XXX", ".XXX.XXX", ".XXX.XXX", "..X...X.", "..X....."};   // velas (el bot)
 const char *const ICO_MANDO[]  = {".XXXXXXXXX.", "XX.XXXXX.XX", "X...XXX.X.X", "XX.XXXXX.XX", ".XXX...XXX."};
 
 // Mezcla dos colores (t = 0 -> a, t = 1 -> b)
@@ -2475,8 +2477,8 @@ void dibujar_cortina() {
     }
   }
 
-  // dock: las 5 pantallas
-  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos")};
+  // dock: las 6 pantallas
+  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos"), T("Bot")};
   int yd = oy + CT_DOCK;
   for (int i = 0; i < N_PANTALLAS; i++) {
     int cxs = i * DOCK_W + DOCK_W / 2;
@@ -2488,6 +2490,7 @@ void dibujar_cortina() {
       case 2: patron(g, ICO_TERM, 5, cxs - 8, yd + 8, 2, c); break;
       case 3: patron(g, ICO_GALAX, 5, cxs - 9, yd + 8, 2, c); break;
       case 4: patron(g, ICO_MANDO, 5, cxs - 11, yd + 8, 2, c); break;
+      case 5: patron(g, ICO_VELAS, 6, cxs - 8, yd + 6, 2, c); break;
     }
     g.setFont(F_PEQ);
     g.setTextDatum(top_center);

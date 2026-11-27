@@ -206,6 +206,7 @@ const Trad TRAD[] = {
   {"espera a ", "waits for ", "等待 ", "espera a "},
   {"fuera", "out", "空仓", "fora"},
   {"Operaciones", "Trades", "交易记录", "Operacions"},
+  {"Tabla", "Table", "表格", "Taula"},
   {" cerradas · ", " closed · ", " 已平仓 · ", " tancades · "},
   {"Par", "Pair", "交易对", "Parell"},
   {"Fecha", "Date", "日期", "Data"},

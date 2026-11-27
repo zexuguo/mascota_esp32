@@ -659,10 +659,15 @@ void fotograma_trading() {
   g.drawString(T("Total"), 8, yb);
   g.setTextColor(tr_pnl + tr_flot >= 0 ? VERDE : ROJO);
   snprintf(b, sizeof(b), " (%+.1f%%)", tr_pct);
-  g.drawString(tr_usdc(tr_pnl + tr_flot) + " USDC" + b, 8 + g.textWidth(T("Total")) + 6, yb);
-  g.setTextDatum(top_right);
-  g.setTextColor(TXT2);
-  g.drawString(String(tr_acierto) + T("% aciertos") + "  ›", 234, yb);
+  g.drawString(recortar(tr_usdc(tr_pnl + tr_flot) + " USDC" + b, 160 - g.textWidth(T("Total")) - 14),
+               8 + g.textWidth(T("Total")) + 6, yb);
+  // el botón de la tabla de operaciones (la letra no tiene «›»: la flecha va dibujada)
+  g.fillRoundRect(170, yb - 3, 64, 19, 6, SUP2);
+  g.setTextDatum(middle_left);
+  g.setTextColor(TXT);
+  g.drawString(T("Tabla"), 178, yb + 6);
+  const char *const der[] = {"X..", "XX.", "XXX", "XX.", "X.."};
+  patron(g, der, 5, 222, yb + 1, 2, TXT);
 
 }
 
