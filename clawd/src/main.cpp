@@ -416,6 +416,11 @@ void tr_recibir_resumen(JsonObject o);
 void tr_recibir(JsonObject o);
 void tr_recibir_vivo(JsonObject o);
 void tr_recibir_evento(JsonObject o);
+void tr_recibir_ops(JsonArray a);
+void tr_recibir_op(JsonObject o);
+void tr_recibir_opt(JsonObject o);
+void tr_abrir_tabla();
+void tr_abrir_ficha(int n);
 void tr_panel(String &val, float &frac, uint16_t &col);
 void abrir_trading();
 void trading_toque(int x, int y);
@@ -558,6 +563,9 @@ void al_mensaje(JsonDocument &doc) {
   if (doc["tr"].is<JsonObject>()) tr_recibir(doc["tr"]);                 // bot de trading: un par
   if (doc["trv"].is<JsonObject>()) tr_recibir_vivo(doc["trv"]);          // bot de trading: precio en directo
   if (doc["tr_ev"].is<JsonObject>()) tr_recibir_evento(doc["tr_ev"]);    // bot de trading: stop, objetivo, compra
+  if (doc["tr_ops"].is<JsonArray>()) tr_recibir_ops(doc["tr_ops"]);       // bot de trading: tabla de operaciones
+  if (doc["tr_op"].is<JsonObject>()) tr_recibir_op(doc["tr_op"]);         // bot de trading: ficha (gráfica y cálculos)
+  if (doc["tr_opt"].is<JsonObject>()) tr_recibir_opt(doc["tr_opt"]);      // bot de trading: ficha (razonamiento)
   if (doc["aj_ply"].is<JsonObject>()) aj_recibir_ply(doc["aj_ply"]);  // ajedrez: una jugada
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
 }
@@ -690,6 +698,9 @@ void cmd_local(const String &c) {
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
   else if (c.startsWith("aj:ir:")) { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
   else if (c == "aj:resumen") { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 0; }
+  else if (c == "trading:ops") { abrir_trading(); tr_abrir_tabla(); }             // pruebas: la tabla
+  else if (c.startsWith("trading:op:")) { abrir_trading(); tr_abrir_ficha(c.substring(11).toInt()); }   // pruebas: una ficha
+  else if (c.startsWith("trading:pag:")) { extern int tr_pag; tr_pag = c.substring(12).toInt(); }          // pruebas: página
   else if (c.startsWith("trading")) {             // pruebas: "trading", "trading:0" (BTC), "trading:2:1H" (SOL en 1 h)
     if (c.length() > 8) { tr_sel = constrain(c.substring(8, 9).toInt(), 0, 2); tr_4h = !c.endsWith(":1H"); tr_nv = 0; }
     abrir_trading();

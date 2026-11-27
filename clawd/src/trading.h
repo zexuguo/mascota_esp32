@@ -8,8 +8,12 @@
 // La placa pide el par que quiere ver ({"ev":"tr:ETH/USDC:4H"}) y lo vuelve a pedir
 // cada 30 s mientras la pantalla está abierta: así la última vela "se mueve".
 //
-// Se abre tocando la página "Bot" del panel. Arriba: los pares (BTC, ETH, SOL).
-// Tocar la gráfica: velas de 1 h (2 días) <-> 4 h (8 días, donde se ven sus operaciones).
+// Se abre tocando la página "Bot" del panel. Tres vistas:
+//   0 gráfica: arriba los pares (BTC, ETH, SOL); tocar la gráfica = velas 1 h <-> 4 h;
+//              tocar la fila de abajo ("Total…") abre la tabla de operaciones
+//   1 tabla:   todas las operaciones ({"ev":"tr:ops"} -> {"tr_ops": [...]}); tocar una = su ficha
+//   2 ficha:   una operación ({"ev":"tr:op:N"} -> {"tr_op"} + {"tr_opt"}): su gráfica, todos los
+//              cálculos y el razonamiento de Claude, el cierre y el escéptico, por páginas
 // ------------------------------------------------------------
 
 // ---- resumen (panel) ----
@@ -27,6 +31,8 @@ float tr_v[TR_MAXV][4];         // o, h, l, c
 int tr_nv = 0;
 String tr_par_cargado, tr_err;
 float tr_precio = 0, tr_var = 0;
+float tr_mom = 0;               // % en 30 días: el régimen del bot (> 0 = puede comprar)
+bool tr_mom_ok = false;
 // posición viva: "ab" abierta, "pe" orden limit esperando, "" nada
 String tr_st;
 float tr_e = 0, tr_sl = 0, tr_tp = 0, tr_sl0 = 0, tr_pos_pnl = 0;
@@ -41,6 +47,30 @@ uint32_t tr_pedido = 0, tr_llegada = 0, tr_desde = 0;
 float tr_vivo[3] = {0, 0, 0}, tr_vivo_pnl[3] = {0, 0, 0};
 uint32_t tr_vivo_t = 0, tr_tick_t = 0;
 int tr_tick_dir = 0;                  // +1 subió, -1 bajó (la etiqueta se ilumina un momento)
+
+// ---- tabla y ficha de operaciones ----
+int tr_vista = 0;               // 0 gráfica, 1 tabla, 2 ficha
+struct TrFila { int n; uint8_t par; String fecha; char est; float pnl, r; bool hay_r; };
+const int TR_MAXF = 40;
+TrFila tr_filas[TR_MAXF];
+int tr_nfilas = -1;             // -1 = aún no ha llegado la tabla
+int tr_pag = 0;                 // página de la tabla o de la ficha
+int tr_op_n = -1;               // operación que se ve en la ficha
+bool tr_op_lista = false;       // ha llegado su gráfica y sus cálculos
+int tr_op_par = 0;
+float tr_op_pnl = 0;
+char tr_op_est = 'c';
+String tr_op_bar;
+int tr_pos_f = -1;              // vela de la venta (la zona de la posición acaba ahí)
+struct TrLinea { String a, b; uint8_t tipo, col; };   // tipo 0 cálculo, 1 texto, 2 título
+const int TR_MAXL = 90;
+TrLinea tr_lin[TR_MAXL];
+int tr_nlin = 0;
+TrLinea tr_calc[22];            // los cálculos tal cual llegan (para rehacer las líneas)
+int tr_ncalc = 0;
+String tr_op_texto;
+uint32_t tr_op_pedido = 0;
+int tr_gy = 84, tr_gh = 124;    // dónde va la gráfica (en la ficha, más pequeña)
 
 void tr_pedir() {
   char b[24];
@@ -70,7 +100,7 @@ void tr_recibir_vivo(JsonObject o) {
   }
   tr_vivo_t = ahora;
   // la última vela del par que se ve se mueve con el precio
-  if (tr_nv > 0 && tr_par_cargado == TR_PARES[tr_sel] && tr_vivo[tr_sel] > 0) {
+  if (tr_vista == 0 && tr_nv > 0 && tr_par_cargado == TR_PARES[tr_sel] && tr_vivo[tr_sel] > 0) {
     float v = tr_vivo[tr_sel];
     tr_precio = v;
     tr_v[tr_nv - 1][3] = v;
@@ -94,13 +124,15 @@ void tr_recibir_evento(JsonObject o) {
 void tr_recibir(JsonObject o) {
   String par = o["par"] | "";
   bool es_4h = String(o["bar"] | "1H") == "4H";
-  if (par != TR_PARES[tr_sel] || es_4h != tr_4h) return;   // llegó tarde: ya se cambió de par
+  if (tr_vista != 0 || par != TR_PARES[tr_sel] || es_4h != tr_4h) return;   // llegó tarde o se ve otra cosa
   tr_llegada = ahora;
   tr_err = o["err"] | "";
   if (tr_err.length()) return;                              // sin red: se queda lo último
   tr_par_cargado = par;
   tr_precio = o["p"] | 0.0f;
   tr_var = o["var"] | 0.0f;
+  tr_mom_ok = o["mom"].is<float>();
+  tr_mom = o["mom"] | 0.0f;
   JsonArray v = o["v"];
   tr_nv = 0;
   for (JsonVariant c : v) {
@@ -155,7 +187,9 @@ void tr_panel(String &val, float &frac, uint16_t &col) {
 }
 
 // ---- la pantalla ----
-const int TR_GX = 4, TR_GY = 84, TR_GW = 192, TR_GH = 124;   // la gráfica
+const int TR_GX = 4, TR_GW = 192;           // la gráfica (alto y posición: tr_gy, tr_gh)
+#define TR_GY tr_gy
+#define TR_GH tr_gh
 const uint16_t TR_VERDE_OSC = C565(30, 62, 40), TR_ROJO_OSC = C565(70, 30, 28);
 
 void tr_linea_disc(int x0, int x1, int y, uint16_t col) {   // línea discontinua
@@ -210,9 +244,9 @@ void tr_grafica() {
   // la posición, como la herramienta "posición larga": zona verde hasta el objetivo, roja hasta el stop
   if (tr_st.length() && tr_e > 0) {
     int xi = tr_pos_i >= 0 ? x0 + tr_pos_i * paso : TR_GX;
-    int xf = TR_GX + TR_GW;
+    int xf = tr_pos_f >= 0 ? x0 + tr_pos_f * paso + 3 : TR_GX + TR_GW;
     if (tr_tp > 0) g.fillRect(xi, min(Y(tr_tp), Y(tr_e)), xf - xi, abs(Y(tr_e) - Y(tr_tp)) + 1, TR_VERDE_OSC);
-    if (tr_st == "ab" && tr_sl0 > 0 && tr_sl0 < tr_e)   // el riesgo del principio
+    if ((tr_st == "ab" || tr_st == "ce") && tr_sl0 > 0 && tr_sl0 < tr_e)   // el riesgo del principio
       g.fillRect(xi, Y(tr_e), xf - xi, Y(tr_sl0) - Y(tr_e) + 1, TR_ROJO_OSC);
     else if (tr_sl > 0 && tr_sl < tr_e)
       g.fillRect(xi, Y(tr_e), xf - xi, Y(tr_sl) - Y(tr_e) + 1, TR_ROJO_OSC);
@@ -228,15 +262,16 @@ void tr_grafica() {
   }
   // niveles de la posición
   if (tr_st.length() && tr_e > 0) {
-    int xi = tr_pos_i >= 0 ? x0 + tr_pos_i * paso : TR_GX, xf = TR_GX + TR_GW;
+    int xi = tr_pos_i >= 0 ? x0 + tr_pos_i * paso : TR_GX;
+    int xf = tr_pos_f >= 0 ? x0 + tr_pos_f * paso + 3 : TR_GX + TR_GW;
     if (tr_tp > 0) { g.drawFastHLine(xi, Y(tr_tp), xf - xi, VERDE); tr_etiqueta(Y(tr_tp), tr_precio_txt(tr_tp), VERDE, FONDO); }
     if (tr_sl > 0) {
-      bool protegida = tr_st == "ab" && tr_sl >= tr_e;    // el stop ya está a la entrada o por encima
+      bool protegida = tr_st != "pe" && tr_sl >= tr_e;    // el stop ya está a la entrada o por encima
       uint16_t c = protegida ? AMARILLO : ROJO;
       g.drawFastHLine(xi, Y(tr_sl), xf - xi, c);
       tr_etiqueta(Y(tr_sl), tr_precio_txt(tr_sl), c, FONDO);
     }
-    if (tr_st == "ab") { g.drawFastHLine(xi, Y(tr_e), xf - xi, TXT); }
+    if (tr_st == "ab" || tr_st == "ce") { g.drawFastHLine(xi, Y(tr_e), xf - xi, TXT); tr_etiqueta(Y(tr_e), tr_precio_txt(tr_e), TXT, FONDO); }
     else { tr_linea_disc(xi, xf, Y(tr_e), AMARILLO); tr_etiqueta(Y(tr_e), tr_precio_txt(tr_e), SUP2, AMARILLO); }
   }
   // compras (▲ verde debajo de la vela) y ventas (▼ arriba, verde si ganó, roja si perdió)
@@ -254,8 +289,8 @@ void tr_grafica() {
       g.drawString(tr_usdc(m.pnl), constrain(x, 12, TR_GX + TR_GW - 12), max(TR_GY + 8, y - 10));
     }
   }
-  // precio actual: línea punteada y un punto que late en la última vela
-  if (tr_nv) {
+  // precio actual: línea punteada y un punto que late en la última vela (no en la ficha)
+  if (tr_nv && tr_vista == 0) {
     int y = Y(tr_precio), x = x0 + (tr_nv - 1) * paso + 1;
     tr_linea_disc(x + 3, TR_GX + TR_GW, y, TXT2);
     float k = 0.5f + 0.5f * sinf(ahora / 260.0f);
@@ -279,7 +314,10 @@ void tr_grafica() {
   g.setFont(F_PEQ);
   g.setTextDatum(top_left);
   g.setTextColor(TXT3);
-  g.drawString(tr_4h ? T("velas 4 h · 8 días · toca: 1 h") : T("velas 1 h · 2 días · toca: 4 h"), TR_GX, TR_GY + TR_GH + 3);
+  if (tr_vista == 0)
+    g.drawString(tr_4h ? T("velas 4 h · 8 días · toca: 1 h") : T("velas 1 h · 2 días · toca: 4 h"), TR_GX, TR_GY + TR_GH + 3);
+  else
+    g.drawString(String(T("velas de ")) + (tr_op_bar == "1H" ? "1 h" : tr_op_bar == "4H" ? "4 h" : "1 d"), TR_GX, TR_GY + TR_GH + 3);
 }
 
 void tr_decision(int y) {
@@ -302,10 +340,254 @@ void tr_decision(int y) {
   for (int i = 0; i < n; i++) texto_mixto(g, lineas[i], 8, y + 19 + i * 14, F_PEQ, top_left);
 }
 
+
+// ================== tabla y ficha de operaciones ==================
+void tr_recibir_ops(JsonArray a) {
+  tr_nfilas = 0;
+  for (JsonVariant v : a) {
+    if (tr_nfilas >= TR_MAXF) break;
+    TrFila &f = tr_filas[tr_nfilas++];
+    f.n = v[0] | -1;  f.par = v[1] | 0;  f.fecha = v[2] | "";  f.est = (v[3] | "c")[0];
+    f.pnl = v[4] | 0.0f;  f.hay_r = !v[5].isNull();  f.r = v[5] | 0.0f;
+  }
+}
+
+// las líneas de la ficha: primero los cálculos, luego el texto partido en renglones
+void tr_lineas_rehacer() {
+  tr_nlin = 0;
+  for (int i = 0; i < tr_ncalc && tr_nlin < TR_MAXL; i++) tr_lin[tr_nlin++] = tr_calc[i];
+  int ini = 0;
+  while (ini < (int)tr_op_texto.length() && tr_nlin < TR_MAXL - 1) {
+    int fin = tr_op_texto.indexOf('\n', ini);
+    if (fin < 0) fin = tr_op_texto.length();
+    String parrafo = tr_op_texto.substring(ini, fin);
+    ini = fin + 1;
+    if (parrafo.startsWith("§")) {                        // un título de sección
+      tr_lin[tr_nlin++] = {"", "", 1, 0};                  // renglón en blanco antes
+      if (tr_nlin < TR_MAXL) tr_lin[tr_nlin++] = {parrafo.substring(2), "", 2, 0};   // "§" ocupa 2 bytes
+      continue;
+    }
+    String trozos[24];
+    int n = envolver(parrafo, 37, trozos, 24);
+    for (int k = 0; k < n && tr_nlin < TR_MAXL; k++) tr_lin[tr_nlin++] = {trozos[k], "", 1, 0};
+  }
+}
+
+void tr_recibir_op(JsonObject o) {
+  if ((o["id"] | -2) != tr_op_n) return;                  // llegó tarde: ya se pidió otra
+  if (!o["err"].isNull()) { tr_op_lista = true; tr_nv = 0; tr_ncalc = 0; tr_lineas_rehacer(); return; }
+  tr_op_par = o["par"] | 0;
+  tr_op_bar = o["bar"] | "1H";
+  tr_op_est = (o["est"] | "c")[0];
+  tr_op_pnl = o["pnl"] | 0.0f;
+  // la gráfica usa las mismas variables que la vista normal (al volver se vuelve a pedir el par)
+  tr_par_cargado = "";
+  tr_nv = 0;
+  for (JsonVariant c : o["v"].as<JsonArray>()) {
+    if (tr_nv >= TR_MAXV) break;
+    for (int k = 0; k < 4; k++) tr_v[tr_nv][k] = c[k] | 0.0f;
+    tr_nv++;
+  }
+  tr_st = tr_op_est == 'a' ? "ab" : tr_op_est == 'p' ? "pe" : "ce";
+  tr_e = o["e"] | 0.0f;  tr_sl0 = o["sl"] | 0.0f;  tr_tp = o["tp"] | 0.0f;
+  tr_sl = o["slf"] | tr_sl0;
+  if (tr_sl <= 0) tr_sl = tr_sl0;
+  tr_pos_i = o["i"] | -1;
+  tr_nm = 0;
+  tr_pos_f = -1;
+  for (JsonVariant m : o["m"].as<JsonArray>()) {
+    if (tr_nm >= 8) break;
+    tr_m[tr_nm++] = {m[0] | -1, (m[1] | "c")[0], m[2] | 0.0f, m[3] | 0.0f};
+    if (tr_m[tr_nm - 1].tipo == 'v') tr_pos_f = tr_m[tr_nm - 1].i;
+  }
+  if (tr_nv) tr_precio = tr_v[tr_nv - 1][3];
+  tr_ncalc = 0;
+  for (JsonVariant c : o["calc"].as<JsonArray>()) {
+    if (tr_ncalc >= 22) break;
+    tr_calc[tr_ncalc++] = {c[0] | "", c[1] | "", 0, (uint8_t)(c[2] | 0)};
+  }
+  tr_op_lista = true;
+  tr_lineas_rehacer();
+}
+
+void tr_recibir_opt(JsonObject o) {
+  if ((o["id"] | -2) != tr_op_n) return;
+  tr_op_texto = o["t"] | "";
+  tr_lineas_rehacer();
+}
+
+void tr_abrir_tabla() {
+  tr_vista = 1;
+  tr_pag = 0;
+  tr_nfilas = -1;
+  pc_enviar("tr:ops");
+}
+
+void tr_abrir_ficha(int n) {
+  tr_vista = 2;
+  tr_op_n = n;
+  tr_op_lista = false;
+  tr_op_texto = "";
+  tr_ncalc = 0;
+  tr_nlin = 0;
+  tr_pag = 0;
+  char b[20];
+  snprintf(b, sizeof(b), "tr:op:%d", n);
+  pc_enviar(b);
+  tr_op_pedido = ahora;
+}
+
+void tr_volver_grafica() {
+  tr_vista = 0;
+  tr_gy = 84; tr_gh = 124;
+  tr_nv = 0; tr_par_cargado = ""; tr_pedido = 0; tr_pos_f = -1;
+}
+
+void tr_cabecera(const String &titulo) {
+  patron(g, PAT_FLECHA_IZQ, 5, 8, BARRA_H + 9, 2, TXT2);
+  g.setFont(F_TXT);
+  g.setTextDatum(middle_left);
+  g.setTextColor(TXT);
+  g.drawString(titulo, 22, BARRA_H + 15);
+}
+
+void tr_paginas(int pag, int total) {               // ‹ 2/5 › abajo
+  if (total <= 1) return;
+  g.setFont(F_PEQ);
+  g.setTextDatum(middle_center);
+  g.setTextColor(TXT2);
+  g.drawString(String(pag + 1) + "/" + String(total), 120, 310);
+  patron(g, PAT_FLECHA_IZQ, 5, 20, 305, 2, pag > 0 ? TXT2 : SUP2);
+  // flecha derecha: la izquierda dada la vuelta
+  const char *const der[] = {"X..", "XX.", "XXX", "XX.", "X.."};
+  patron(g, der, 5, 214, 305, 2, pag < total - 1 ? TXT2 : SUP2);
+}
+
+const int TR_FILAS_PAG = 12, TR_FILA_H = 19, TR_FILA_Y = 70;
+
+void fotograma_tabla() {
+  char b[24];
+  tr_cabecera(T("Operaciones"));
+  g.setFont(F_PEQ);
+  g.setTextDatum(middle_right);
+  g.setTextColor(TXT3);
+  g.drawString(String(tr_n) + T(" cerradas · ") + String(tr_acierto) + " %", 234, BARRA_H + 15);
+  if (tr_nfilas < 0) {
+    g.setTextDatum(middle_center);
+    g.drawString(T("Cargando…"), 120, 150);
+    return;
+  }
+  // títulos de columna
+  int y = 56;
+  g.setTextColor(TXT3);
+  g.setTextDatum(middle_left);
+  g.drawString(T("Par"), 8, y);
+  g.drawString(T("Fecha"), 44, y);
+  g.setTextDatum(middle_right);
+  g.drawString("USDC", 128, y);
+  g.drawString("R", 170, y);
+  g.drawFastHLine(8, y + 7, 224, SUP);
+  int paginas = (tr_nfilas + TR_FILAS_PAG - 1) / TR_FILAS_PAG;
+  tr_pag = constrain(tr_pag, 0, max(0, paginas - 1));
+  for (int k = 0; k < TR_FILAS_PAG; k++) {
+    int i = tr_pag * TR_FILAS_PAG + k;
+    if (i >= tr_nfilas) break;
+    const TrFila &f = tr_filas[i];
+    int yf = TR_FILA_Y + k * TR_FILA_H + TR_FILA_H / 2;
+    if (k % 2) g.fillRect(4, yf - TR_FILA_H / 2, 232, TR_FILA_H, C565(20, 20, 19));
+    String par = TR_PARES[min((int)f.par, 2)];
+    g.setTextDatum(middle_left);
+    g.setTextColor(TXT);
+    g.drawString(par.substring(0, par.indexOf('/')), 8, yf);
+    g.setTextColor(TXT3);
+    g.drawString(f.fecha, 44, yf);
+    g.setTextDatum(middle_right);
+    if (f.est == 'c') {
+      g.setTextColor(f.pnl > 0 ? VERDE : f.pnl < 0 ? ROJO : TXT2);
+      snprintf(b, sizeof(b), "%+.2f", f.pnl);
+      g.drawString(b, 128, yf);
+    } else {
+      g.setTextColor(f.est == 'a' ? AMARILLO : TXT3);
+      g.drawString(f.est == 'a' ? T("abierta") : f.est == 'p' ? T("esperando") : T("revisar"), 128, yf);
+    }
+    if (f.hay_r) {
+      g.setTextColor(f.r > 0 ? VERDE : ROJO);
+      snprintf(b, sizeof(b), "%+.1f", f.r);
+      g.drawString(b, 170, yf);
+      // barrita de R: el cero en x = 190, 14 px por R (de -1 R a +3 R)
+      int largo = (int)lroundf(constrain(f.r, -1.0f, 3.0f) * 14);
+      g.drawFastVLine(190, yf - 6, 12, SUP2);
+      if (largo > 0) g.fillRect(191, yf - 4, largo, 8, VERDE);
+      else if (largo < 0) g.fillRect(190 + largo, yf - 4, -largo, 8, ROJO);
+    }
+  }
+  tr_paginas(tr_pag, paginas);
+}
+
+const int TR_LIN_Y = 166, TR_LIN_H = 14, TR_LIN_PAG = 9;
+
+void fotograma_ficha() {
+  char b[24];
+  String par = TR_PARES[min(tr_op_par, 2)];
+  tr_cabecera(par.substring(0, par.indexOf('/')) + (tr_nfilas > 0 ? "" : ""));
+  if (!tr_op_lista) {
+    g.setFont(F_PEQ);
+    g.setTextDatum(middle_center);
+    g.setTextColor(TXT3);
+    g.drawString(T("Cargando…"), 120, 150);
+    if (ahora - tr_op_pedido > 5000) tr_abrir_ficha(tr_op_n);   // no llegó: pedirla otra vez
+    return;
+  }
+  // el resultado, como una etiqueta arriba a la derecha
+  g.setFont(F_PEQ);
+  String res = tr_op_est == 'c' ? String(tr_op_pnl >= 0 ? "+" : "") + String(tr_op_pnl, 2) + " USDC"
+             : tr_op_est == 'a' ? String(T("abierta")) : String(T("esperando"));
+  uint16_t col = tr_op_est != 'c' ? AMARILLO : tr_op_pnl > 0 ? VERDE : ROJO;
+  int w = g.textWidth(res) + 12;
+  g.fillRoundRect(234 - w, BARRA_H + 6, w, 18, 5, col);
+  g.setTextColor(FONDO);
+  g.setTextDatum(middle_center);
+  g.drawString(res, 234 - w / 2, BARRA_H + 15);
+  // la gráfica de la operación
+  tr_gy = 54; tr_gh = 92;
+  if (tr_nv) tr_grafica();
+  // los cálculos y el razonamiento, por páginas
+  int paginas = max(1, (tr_nlin + TR_LIN_PAG - 1) / TR_LIN_PAG);
+  tr_pag = constrain(tr_pag, 0, paginas - 1);
+  for (int k = 0; k < TR_LIN_PAG; k++) {
+    int i = tr_pag * TR_LIN_PAG + k;
+    if (i >= tr_nlin) break;
+    const TrLinea &l = tr_lin[i];
+    int y = TR_LIN_Y + k * TR_LIN_H;
+    if (l.tipo == 0) {                               // cálculo: etiqueta | valor
+      g.setFont(F_PEQ);
+      g.setTextDatum(top_left);
+      g.setTextColor(TXT3);
+      g.drawString(l.a, 8, y);
+      int hueco = 226 - g.textWidth(l.a) - 8;
+      g.setTextDatum(top_right);
+      g.setTextColor(l.col == 1 ? VERDE : l.col == 2 ? ROJO : l.col == 3 ? AMARILLO : TXT);
+      g.drawString(recortar(l.b, hueco), 232, y);
+    } else if (l.tipo == 2) {                        // título de sección
+      g.setTextColor(CLAWD);
+      texto_mixto(g, l.a, 8, y, F_PEQ, top_left);
+    } else {
+      g.setTextColor(TXT2);
+      texto_mixto(g, l.a, 8, y, F_PEQ, top_left);
+    }
+  }
+  tr_paginas(tr_pag, paginas);
+  (void)b;
+}
+
 void fotograma_trading() {
   g.fillScreen(FONDO);
   brillo_obj = 140;
   led(0, 2, 1);
+  if (ahora - ultima_interaccion > 180000) { tr_volver_grafica(); pantalla = PANT_MASCOTA; return; }
+  if (tr_vista == 1) { fotograma_tabla(); return; }
+  if (tr_vista == 2) { fotograma_ficha(); return; }
+  tr_gy = 84; tr_gh = 124;
   // pedir el par: al entrar, al cambiar y cada 30 s (si no llega en 4 s, otra vez)
   bool cargado = tr_par_cargado == TR_PARES[tr_sel] && tr_nv > 0;
   if (!tr_pedido || ahora - tr_pedido > (cargado && tr_llegada >= tr_pedido ? 30000u : 4000u)) tr_pedir();
@@ -356,6 +638,10 @@ void fotograma_trading() {
   } else if (tr_st == "pe") {
     g.setTextColor(AMARILLO);
     g.drawString(String(T("espera a ")) + tr_precio_txt(tr_e), 234, y + 4);
+  } else if (tr_mom_ok && tr_mom <= 0) {        // la regla de 30 días no deja comprar
+    g.setTextColor(ROJO);
+    snprintf(b, sizeof(b), "%+.0f%%", tr_mom);
+    g.drawString(String(T("bloqueado · 30 d ")) + b, 234, y + 4);
   } else {
     g.setTextColor(TXT3);
     g.drawString(T("fuera"), 234, y + 4);
@@ -375,15 +661,14 @@ void fotograma_trading() {
   snprintf(b, sizeof(b), " (%+.1f%%)", tr_pct);
   g.drawString(tr_usdc(tr_pnl + tr_flot) + " USDC" + b, 8 + g.textWidth(T("Total")) + 6, yb);
   g.setTextDatum(top_right);
-  g.setTextColor(TXT3);
-  g.drawString(String(tr_acierto) + T("% aciertos"), 234, yb);
+  g.setTextColor(TXT2);
+  g.drawString(String(tr_acierto) + T("% aciertos") + "  ›", 234, yb);
 
-  // volver sola a la mascota tras 3 min sin tocar
-  if (ahora - ultima_interaccion > 180000) pantalla = PANT_MASCOTA;
 }
 
 void abrir_trading() {
   pantalla = PANT_TRADING;
+  tr_volver_grafica();
   tr_pedido = 0;
   interaccion();
   SONAR(S_CLIC);
@@ -391,6 +676,21 @@ void abrir_trading() {
 
 void trading_toque(int x, int y) {
   interaccion();
+  if (tr_vista == 1) {                                  // la tabla
+    SONAR(S_CLIC);
+    if (y < BARRA_H + 30) { if (x < 120) tr_volver_grafica(); return; }
+    if (y >= 298) { tr_pag += x < 120 ? -1 : 1; return; }
+    int k = (y - TR_FILA_Y) / TR_FILA_H, i = tr_pag * TR_FILAS_PAG + k;
+    if (y >= TR_FILA_Y && k < TR_FILAS_PAG && i < tr_nfilas) tr_abrir_ficha(tr_filas[i].n);
+    return;
+  }
+  if (tr_vista == 2) {                                  // la ficha
+    SONAR(S_CLIC);
+    if (y < BARRA_H + 30) { if (x < 120) { tr_vista = 1; tr_pag = 0; } return; }
+    if (y >= TR_LIN_Y - 16) tr_pag += x < 120 ? -1 : 1;  // abajo: páginas (izquierda atrás, derecha adelante)
+    return;
+  }
+  if (y >= 292) { SONAR(S_CLIC); tr_abrir_tabla(); return; }   // "Total … ›": la tabla
   if (y < BARRA_H + 30) {
     if (x < 20) { pantalla = PANT_MASCOTA; SONAR(S_CLIC); return; }   // ‹ volver
     int k = (x - 22) / 56;

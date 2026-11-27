@@ -516,6 +516,10 @@ class Companion:
         elif ev == "voz_auto_fin" and self.grabacion == "auto":
             audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev == "tr:ops":                          # la tabla de operaciones del bot
+            threading.Thread(target=lambda: self.enviar({"tr_ops": TR.operaciones()}), daemon=True).start()
+        elif ev and ev.startswith("tr:op:"):          # la ficha de una operación (n = posición)
+            threading.Thread(target=self.trading_ficha, args=(int(ev[6:]),), daemon=True).start()
         elif ev and ev.startswith("tr:"):            # la pantalla del bot pide un par: "tr:ETH/USDC:4H"
             _, nombre, bar = (ev.split(":") + ["1H"])[:3]
             threading.Thread(target=self.trading_par, args=(nombre, bar), daemon=True).start()
@@ -984,6 +988,15 @@ class Companion:
         except Exception as e:                         # sin red: la placa enseña lo último que tenga
             log("trading: no pude leer", nombre, e)
             self.enviar({"tr": {"par": nombre, "bar": bar, "err": "sin red"}})
+
+    def trading_ficha(self, n: int):
+        try:
+            ficha, texto = TR.operacion(n)
+            self.enviar({"tr_op": ficha})
+            self.enviar({"tr_opt": texto})
+        except Exception as e:
+            log("trading: no pude hacer la ficha", n, e)
+            self.enviar({"tr_op": {"id": n, "err": "sin datos"}})
 
     def vigilar_trading(self):
         if not TR.disponible():

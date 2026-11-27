@@ -48,6 +48,22 @@ def velas(par: str, bar: str = "1H") -> list:
     return v
 
 
+def momentum(par: str, dias: int = 30) -> float | None:
+    """Igual que el bot (src/indicadores.momentum): cierre diario de ayer frente al de hace `dias`.
+    Velas diarias UTC del mercado real, como las que usa el bot."""
+    cuando, m = _cache_velas.get((par, "mom"), (0, None))
+    if time.time() - cuando < 600:
+        return m
+    url = (f"https://www.okx.com/api/v5/market/candles?instId={par.replace('/', '-')}"
+           f"&bar=1Dutc&limit={dias + 5}")
+    req = urllib.request.Request(url, headers={"User-Agent": "ClawdCompanion/1.0"})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        cierres = [float(d[4]) for d in reversed(json.loads(r.read()).get("data", []))][:-1]
+    m = cierres[-1] / cierres[-1 - dias] - 1 if len(cierres) > dias else None
+    _cache_velas[(par, "mom")] = (time.time(), m)
+    return m
+
+
 def ultima_decision_log() -> dict:
     """Capital y exposición del último ciclo (vienen en cada decisión del log)."""
     logs = sorted((BOT / "logs").glob("20*.jsonl"))
@@ -185,8 +201,13 @@ def par(nombre: str, bar: str = "1H") -> dict:
     atras = 24 if bar == "1H" else 6                                # cambio en 24 h
     var = 100 * (precio / v[-atras - 1][4] - 1) if len(v) > atras else 0
 
+    try:
+        mom = momentum(nombre)
+    except Exception:
+        mom = None
     out = {
-        "par": nombre, "bar": bar, "p": precio, "var": round(var, 2), "t0": v[0][0] // 1000,
+        "par": nombre, "bar": bar, "p": precio,
+        "mom": round(mom * 100, 1) if mom is not None else None,   # % en 30 días (régimen) "var": round(var, 2), "t0": v[0][0] // 1000,
         "v": [[o, h, l, c] for _, o, h, l, c in v],
         "pos": viva, "m": marcas,
         "dec": {"acc": plan.get("accion", ""), "hace": hace,
@@ -304,3 +325,208 @@ class EnVivo:
                 self.log(f"trading: precio en directo caído ({e}); reintento en {espera} s")
                 time.sleep(espera)
                 espera = min(espera * 2, 300)
+
+
+# ------------------------------------------------------------------
+# Tabla de operaciones y ficha de cada una (con sus cálculos y razonamiento)
+# La placa pide "tr:ops" (la tabla) y "tr:op:<orden_id>" (una ficha).
+# ------------------------------------------------------------------
+BAR_MS = {"1H": 3600_000, "4H": 4 * 3600_000, "1Dutc": 86400_000}
+
+
+def _es(x: float, dec: int = 2) -> str:
+    """Número a la española: 1.655,00"""
+    s = f"{x:,.{dec}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _pc(x: float, dec: int = 1) -> str:
+    """+5,3 % (con signo y coma)."""
+    return f"{x:+.{dec}f}".replace(".", ",")
+
+
+def _precio(x: float) -> str:
+    return _es(x, 0 if x >= 10000 else 1 if x >= 1000 else 2)
+
+
+def _fecha(ms: int | None) -> str:
+    import datetime
+    if not ms:
+        return "?"
+    return datetime.datetime.fromtimestamp(ms / 1000).strftime("%d/%m %H:%M")
+
+
+def _eventos_log() -> dict:
+    """Del log del bot: cuándo se cerró cada orden, y la Time Machine, momentum y escéptico."""
+    import datetime
+    cierres, tm, mom = {}, [], []
+    for f in sorted((BOT / "logs").glob("20*.jsonl")):
+        try:
+            lineas = f.read_text().splitlines()
+        except OSError:
+            continue
+        for l in lineas:
+            if '"cerrada"' not in l and '"timemachine"' not in l and '"momentum"' not in l:
+                continue
+            try:
+                d = json.loads(l)
+            except ValueError:
+                continue
+            ts = int(datetime.datetime.fromisoformat(d["ts"]).timestamp() * 1000)
+            if d.get("accion") == "cerrada" and "posicion" in d:
+                cierres.setdefault(d["posicion"]["orden_id"], ts)
+            elif d.get("accion") == "timemachine" and "inclinacion" in d:
+                tm.append((ts, d))
+            elif d.get("accion") == "momentum":
+                mom.append((ts, d.get("momentos", {})))
+    return {"cierres": cierres, "tm": tm, "mom": mom}
+
+
+def _r(p: dict) -> tuple[float | None, float | None]:
+    """(R planeada, R conseguida). R = lo que se arriesgaba hasta el stop inicial."""
+    e = p.get("precio_entrada")
+    sl = p.get("stop_loss_inicial") or p.get("stop_loss")
+    if not e or not sl or sl >= e:
+        return None, None
+    riesgo = p["cantidad"] * (e - sl)
+    plan = (p["objetivo"] - e) / (e - sl) if p.get("objetivo") else None
+    hecho = p["pnl"] / riesgo if p.get("pnl") is not None and riesgo > 0 else None
+    return plan, hecho
+
+
+def operaciones() -> list:
+    """Filas de la tabla, la más nueva primero: [n, par, fecha, estado, pnl, R].
+    n = posición en posiciones.json (una venta en dos partes comparte orden_id)."""
+    todas = _json(BOT / "data/posiciones.json", [])
+    pos = [(n, p) for n, p in enumerate(todas)
+           if p.get("estado") in ("cerrada", "abierta", "pendiente", "huérfana")]
+    pos.sort(key=lambda np_: (np_[1].get("ts") or 0, np_[0]), reverse=True)
+    filas = []
+    for n, p in pos[:40]:
+        _, r_hecho = _r(p)
+        estado = {"cerrada": "c", "abierta": "a", "pendiente": "p"}.get(p["estado"], "h")
+        filas.append([n, PARES.index(p["par"]) if p["par"] in PARES else 0,
+                      _fecha(p.get("ts"))[:5], estado, round(p.get("pnl") or 0, 2),
+                      round(r_hecho, 2) if r_hecho is not None else None])
+    return filas
+
+
+def _velas_hasta(par: str, bar: str, fin_ms: int, n: int = 48) -> list:
+    url = (f"https://www.okx.com/api/v5/market/history-candles?instId={par.replace('/', '-')}"
+           f"&bar={bar}&limit={n}&after={fin_ms}")
+    req = urllib.request.Request(url, headers={"x-simulated-trading": "1", "User-Agent": "ClawdCompanion/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        datos = json.loads(r.read()).get("data", [])
+    return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4])] for d in reversed(datos)]
+
+
+def operacion(n: int) -> tuple[dict, dict]:
+    """La ficha de la operación n: (cálculos + gráfica, texto del razonamiento). Dos mensajes."""
+    todas = _json(BOT / "data/posiciones.json", [])
+    if not 0 <= n < len(todas):
+        return {"id": n, "err": "no existe"}, {"id": n, "t": ""}
+    p = todas[n]
+    orden_id = p["orden_id"]
+    ev = _eventos_log()
+    par, base = p["par"], p["par"].split("/")[0]
+    e = p.get("precio_entrada")
+    lim = p["precio_limite"]
+    sl0 = p.get("stop_loss_inicial") or p.get("stop_loss")
+    tp = p.get("objetivo")
+    t_orden = p.get("ts") or 0
+    t_cierre = p.get("ts_cierre") or ev["cierres"].get(orden_id)
+    ahora = int(time.time() * 1000)
+
+    # la gráfica: elegir el tamaño de vela para que quepa todo el trade
+    fin = (t_cierre or ahora)
+    dur_h = max(1, (fin - t_orden) / 3600_000)
+    bar = "1H" if dur_h <= 36 else "4H" if dur_h <= 36 * 4 else "1Dutc"
+    ms = BAR_MS[bar]
+    fin_graf = min(ahora + ms, fin + 6 * ms)
+    try:
+        v = _velas_hasta(par, bar, fin_graf)
+    except Exception:
+        v = []
+    i_orden = next((i for i, x in enumerate(v) if x[0] + ms > t_orden), -1)
+    i_compra = -1
+    if e and i_orden >= 0:
+        i_compra = next((i for i in range(i_orden, len(v)) if v[i][3] <= e), i_orden)
+    i_venta = next((i for i, x in enumerate(v) if t_cierre and x[0] + ms > t_cierre), -1)
+
+    # los cálculos, ya hechos: [etiqueta, valor, color] (color: 0 normal, 1 verde, 2 rojo, 3 amarillo)
+    calc = []
+    estado = {"cerrada": "cerrada", "abierta": "abierta", "pendiente": "orden esperando",
+              "huérfana": "huérfana (revisar)"}.get(p["estado"], p["estado"])
+    calc.append(["Estado", estado, 0])
+    calc.append(["Orden puesta", _fecha(t_orden), 0])
+    if t_cierre:
+        h = (t_cierre - t_orden) / 3600_000
+        calc.append(["Cerrada", f"{_fecha(t_cierre)} ({h:.0f} h)" if h < 72 else f"{_fecha(t_cierre)} ({h / 24:.1f} d)".replace(".", ","), 0])
+    calc.append(["Precio límite", _precio(lim), 3])
+    if e:
+        calc.append(["Entrada", _precio(e), 0])
+    ref = e or lim
+    if sl0:
+        calc.append(["Stop inicial", f"{_precio(sl0)} ({_pc(100 * (sl0 / ref - 1))} %)", 2])
+    if p.get("stop_loss") and sl0 and p["stop_loss"] != sl0:
+        calc.append(["Stop subido a la entrada", _precio(p["stop_loss"]), 3])
+    if tp:
+        calc.append(["Objetivo", f"{_precio(tp)} ({_pc(100 * (tp / ref - 1))} %)", 1])
+    if sl0 and tp and ref > sl0:
+        r_plan = (tp - ref) / (ref - sl0)
+        calc.append(["R prevista (premio/riesgo)", f"{_es(r_plan)} R", 0])
+    q = p.get("cantidad") or 0
+    coste = p.get("coste") or (q * ref)
+    calc.append(["Tamaño", f"{q:g} {base} = {_es(coste)} USDC".replace(".", ",", 1), 0])
+    if sl0 and ref > sl0:
+        riesgo = q * (ref - sl0) + coste * 0.002
+        calc.append(["Riesgo si salta el stop", f"{_es(riesgo)} USDC", 2])
+    if p.get("precio_salida"):
+        calc.append(["Salida", f"{_precio(p['precio_salida'])} · {p.get('motivo_cierre') or '?'}", 0])
+        com = coste * 0.001 + (p.get("ingreso") or coste) * 0.001
+        calc.append(["Comisiones (0,1 % × 2)", f"≈ {_es(com)} USDC", 0])
+    if p.get("pnl") is not None:
+        pnl = p["pnl"]
+        calc.append(["Resultado", f"{_pc(pnl, 2)} USDC ({_pc(100 * pnl / coste, 2)} %)", 1 if pnl > 0 else 2])
+        _, r_hecho = _r(p)
+        if r_hecho is not None:
+            calc.append(["R conseguida", f"{_pc(r_hecho, 2)} R", 1 if r_hecho > 0 else 2])
+    # lo que vieron los filtros en código (solo existe desde el 27/11)
+    tm = [d for ts, d in ev["tm"] if d.get("par") == par and 0 <= t_orden - ts < 15 * 60_000]
+    if tm:
+        d = tm[-1]
+        calc.append(["Time Machine", f"obj {100 * d['p_objetivo']:.0f} % · stop {100 * d['p_stop']:.0f} % · "
+                                     f"{_pc(100 * d['inclinacion'])} pts", 1 if d["inclinacion"] >= -0.05 else 2])
+    mm = [m for ts, m in ev["mom"] if 0 <= t_orden - ts < 15 * 60_000 and m.get(par) is not None]
+    if mm:
+        calc.append(["Momentum 30 d", f"{_pc(100 * mm[-1][par])} %", 1 if mm[-1][par] > 0 else 2])
+
+    marcas = []
+    if i_compra >= 0 and e:
+        marcas.append([i_compra, "c", e, 0])
+    if i_venta >= 0 and p.get("precio_salida"):
+        marcas.append([i_venta, "v", p["precio_salida"], round(p.get("pnl") or 0, 1)])
+    ficha = {"id": n, "par": PARES.index(par) if par in PARES else 0, "bar": bar,
+             "est": p["estado"][0], "e": e or lim, "sl": sl0 or 0, "tp": tp or 0,
+             "slf": p.get("stop_loss") or 0, "i": i_compra if e else i_orden,
+             "pnl": round(p.get("pnl") or 0, 2),
+             "v": [[o, h, l, c] for _, o, h, l, c in v], "m": marcas, "calc": calc}
+    while len(json.dumps({"tr_op": ficha}, ensure_ascii=False).encode()) > 3500 and len(ficha["v"]) > 16:
+        ficha["v"] = ficha["v"][4:]
+        ficha["i"] = max(-1, ficha["i"] - 4)
+        ficha["m"] = [[i - 4, *r] for i, *r in ficha["m"] if i >= 4]
+
+    # el razonamiento, en texto
+    partes = []
+    if p.get("motivo_entrada"):
+        partes.append("§Por qué compró (Claude)\n" + p["motivo_entrada"])
+    if p.get("motivo_cierre"):
+        cierre = p["motivo_cierre"] + (f". {p['nota_cierre']}" if p.get("nota_cierre") else "")
+        partes.append("§Cómo se cerró\n" + cierre)
+    esc = [r for r in _json(BOT / "data/esceptico.json", []) if r.get("orden_id") == orden_id]
+    if esc:
+        partes.append(f"§Escéptico ({esc[-1]['veredicto']}, {esc[-1]['confianza']})\n" + esc[-1]["argumento"])
+    texto = "\n".join(partes)
+    while len(json.dumps({"tr_opt": {"id": n, "t": texto}}, ensure_ascii=False).encode()) > 3500:
+        texto = texto[:-60].rsplit(" ", 1)[0] + "…"
+    return ficha, {"id": n, "t": texto}
