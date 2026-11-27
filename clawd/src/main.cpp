@@ -199,6 +199,14 @@ const int N_VERBOS = sizeof(VERBOS) / sizeof(VERBOS[0]);
 // ---------- El sobremesa (IA local) ----------
 bool sm_on = false, sm_ia = false, sm_conocido = false;
 uint32_t sm_encendiendo = 0;      // cuándo se pidió encenderlo (0 = no)
+extern int pagina;
+extern uint32_t prox_pagina;
+void encender_sobremesa() {
+  pc_enviar("sobremesa:encender");
+  sm_encendiendo = ahora;
+  pagina = 3;
+  prox_pagina = ahora + 90000;      // quedarse en esta página mientras arranca
+}
 String sm_modelo;
 int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
 
@@ -578,9 +586,7 @@ void al_tocar(int x, int y) {
     return;
   }
   if (y > PANEL_Y && pagina == 3 && !sm_on && !sm_encendiendo) {   // sobremesa apagado: encenderlo
-    pc_enviar("sobremesa:encender");
-    sm_encendiendo = ahora;
-    prox_pagina = ahora + 90000;                 // quedarse aquí mientras arranca
+    encender_sobremesa();
     SONAR(S_CLIC);
     return;
   }
@@ -663,6 +669,7 @@ void cmd_local(const String &c) {
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
   else if (c.startsWith("aj:ir:")) { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
   else if (c == "aj:resumen") { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 0; }
+  else if (c == "sobremesa:encender") { pantalla = PANT_MASCOTA; encender_sobremesa(); }   // = tocar "apagado · toca"
   else if (c.startsWith("panel:")) { pagina = c.substring(6).toInt(); prox_pagina = ahora + 20000; }   // pruebas
   else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
   else if (c.startsWith("idioma:")) {
