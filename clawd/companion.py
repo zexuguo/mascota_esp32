@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.request
 import wave
 from base64 import b64decode
 from pathlib import Path
@@ -904,6 +905,28 @@ class Companion:
                 log("Ajedrez:", e)
             time.sleep(120)
 
+    # --- el sobremesa (la "IA mixta"): ¿está encendido, qué modelo tiene cargado, cómo va la GPU? ---
+    # Sin instalar nada allí: la API de Ollama por Tailscale y nvidia-smi por SSH (un usuario sin privilegios).
+    SOBREMESA_IP = "IP_DEL_SOBREMESA"      # por IP: con el nombre, Ollama contesta 403
+
+    def vigilar_sobremesa(self):
+        while True:
+            estado = {"on": 0}
+            try:
+                with urllib.request.urlopen(f"http://{self.SOBREMESA_IP}:11434/api/ps", timeout=3) as r:
+                    modelos = json.loads(r.read()).get("models", [])
+                estado = {"on": 1, "modelo": modelos[0]["name"] if modelos else ""}
+                out = subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "usuario@sobremesa",
+                     "nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total "
+                     "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=8).stdout
+                gpu, temp, usada, total = (int(float(x)) for x in out.strip().split(","))
+                estado.update(gpu=gpu, temp=temp, vram=usada, vram_max=total)
+            except Exception:
+                pass                                   # apagado, sin Tailscale o sin SSH: lo que se sepa
+            self.enviar({"sobremesa": estado})
+            time.sleep(15)
+
     # --- no dormirse mientras Claude trabaja (aunque cierres la tapa) ---
     def mantener_despierto(self, si: bool):
         if si and self.inhibidor is None:
@@ -971,6 +994,7 @@ class Companion:
         threading.Thread(target=self.telemetria, daemon=True).start()
         threading.Thread(target=self.vigilar, daemon=True).start()
         threading.Thread(target=self.vigilar_ajedrez, daemon=True).start()
+        threading.Thread(target=self.vigilar_sobremesa, daemon=True).start()
         avisado = False
         while True:
             try:

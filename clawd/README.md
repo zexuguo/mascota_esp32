@@ -179,3 +179,9 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
   no idéntica (no publican su fórmula). Código en `ajedrez.py` (en el PC) y `src/ajedrez.h` (la pantalla).
 - En la placa: resumen (precisión y jugadas por tipo) → *Revisar* (jugada a jugada, flecha verde con la
   mejor) o *Mis errores* (salta solo por tus fallos). Abajo: ‹ atrás · centro = resumen · › adelante.
+
+## El sobremesa (IA local)
+- Si el sobremesa está encendido, el panel de la mascota añade una página **Sobremesa**: el modelo de Ollama
+  cargado (o "libre"), la temperatura de la GPU y la barra de VRAM usada. Si está apagado, la página no sale.
+- Sin instalar nada allí: la API de Ollama por Tailscale (`IP_DEL_SOBREMESA:11434/api/ps`) y `nvidia-smi` por
+  SSH (`usuario@sobremesa`), cada 15 s.

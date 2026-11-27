@@ -196,6 +196,11 @@ const char *const VERBOS[] = {
 };
 const int N_VERBOS = sizeof(VERBOS) / sizeof(VERBOS[0]);
 
+// ---------- El sobremesa (IA local) ----------
+bool sm_on = false;
+String sm_modelo;
+int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
+
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
 enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_AJEDREZ };
 Pantalla pantalla = PANT_MASCOTA;
@@ -515,6 +520,15 @@ void al_mensaje(JsonDocument &doc) {
     notificar(1, T("Claude pide permiso"), perm_herr + " · " + perm_proy);
   }
   if (doc["permiso_fin"].is<const char *>() && perm_id == doc["permiso_fin"].as<String>()) perm_activo = false;
+  if (doc["sobremesa"].is<JsonObject>()) {         // el sobremesa (IA local)
+    JsonObject o = doc["sobremesa"];
+    sm_on = (o["on"] | 0) != 0;
+    sm_modelo = o["modelo"] | "";
+    sm_gpu = o["gpu"] | -1;
+    sm_temp = o["temp"] | 0;
+    sm_vram = o["vram"] | 0;
+    sm_vram_max = max(1, (int)(o["vram_max"] | 1));
+  }
   if (doc["aj"].is<JsonObject>()) aj_recibir_resumen(doc["aj"]);       // ajedrez: el resumen
   if (doc["aj_ply"].is<JsonObject>()) aj_recibir_ply(doc["aj_ply"]);  // ajedrez: una jugada
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
@@ -560,7 +574,8 @@ void al_tocar(int x, int y) {
     return;
   }
   if (y > PANEL_Y) {                             // panel: siguiente página
-    pagina = (pagina + 1) % 3;
+    pagina = (pagina + 1) % 4;
+    if (pagina == 3 && !sm_on) pagina = 0;
     prox_pagina = ahora + 12000;
     SONAR(S_CLIC);
     return;
@@ -637,6 +652,7 @@ void cmd_local(const String &c) {
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
   else if (c.startsWith("aj:ir:")) { aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
   else if (c == "aj:resumen") { aj_vista = 0; }
+  else if (c.startsWith("panel:")) { pagina = c.substring(6).toInt(); prox_pagina = ahora + 20000; }   // pruebas
   else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
   else if (c.startsWith("idioma:")) {
     String cod = c.substring(7);
@@ -1328,15 +1344,17 @@ void texto_panel(const String &txt, uint16_t col, const String &sub = "") {
   g.drawString(txt.substring(txt[corte] == ' ' ? corte + 1 : corte), 120, PANEL_Y + 40);
 }
 
+String recortar(const String &t, int ancho);
 void fila_dato(const char *nombre, const String &valor, float frac, uint16_t col) {
   g.setFont(F_TXT);
   g.setTextColor(TXT);
   g.setTextDatum(middle_left);
   g.drawString(nombre, 22, PANEL_Y + 22);
+  int hueco = 218 - (22 + g.textWidth(nombre) + 10);   // lo que queda a la derecha de la etiqueta
   g.setFont(F_PEQ);
   g.setTextDatum(middle_right);
   g.setTextColor(TXT2);
-  g.drawString(valor, 218, PANEL_Y + 22);
+  g.drawString(recortar(valor, hueco), 218, PANEL_Y + 22);
   barra(22, PANEL_Y + 38, 196, 6, frac, col);
 }
 
@@ -1392,9 +1410,10 @@ void dibujar_panel() {
     return;
   }
 
-  if (ahora > prox_pagina) {
-    pagina = (pagina + 1) % 3;
-    if (pagina == 2 && pc_bat < 0) pagina = 0;   // sin batería, solo CPU y RAM
+  if (ahora > prox_pagina || (pagina == 3 && !sm_on)) {
+    pagina = (pagina + 1) % 4;
+    if (pagina == 2 && pc_bat < 0) pagina = 3;   // sin batería, se la salta
+    if (pagina == 3 && !sm_on) pagina = 0;       // el sobremesa, solo si está encendido
     prox_pagina = ahora + 7000;
   }
   if (!pc_conectado()) {
@@ -1411,6 +1430,14 @@ void dibujar_panel() {
     case 1:
       fila_dato(T("Memoria"), String((int)pc_ram) + " %", pc_ram / 100, pc_ram > 90 ? ROJO : TXT2);
       break;
+    case 3: {                                      // el sobremesa: modelo cargado, GPU y VRAM
+      String modelo = sm_modelo.length() ? sm_modelo.substring(0, sm_modelo.indexOf(':') > 0 ? sm_modelo.indexOf(':') : sm_modelo.length())
+                                         : String(T("libre"));
+      String val = sm_gpu >= 0 ? modelo + " · " + String(sm_temp) + "°C" : modelo;
+      fila_dato(T("Sobremesa"), val, (float)sm_vram / sm_vram_max,
+                sm_temp >= 80 ? ROJO : (sm_modelo.length() ? VERDE : TXT2));
+      break;
+    }
     case 2:
       if (pc_bat >= 0)
         fila_dato(T("Batería"), String(pc_bat) + " %" + (pc_carga ? T("  ·  cargando") : ""), pc_bat / 100.0f,

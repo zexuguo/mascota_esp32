@@ -153,6 +153,8 @@ const Trad TRAD[] = {
   {"Posición inicial", "Starting position", "初始局面", "Posició inicial"},
   {"Mejor: ", "Best: ", "最佳:", "Millor: "},
   {"solo errores", "mistakes only", "只看失误", "només errors"},
+  {"Sobremesa", "Desktop", "台式机", "Sobretaula"},
+  {"libre", "idle", "空闲", "lliure"},
   // ---- títulos en píxeles (en chino se pintan con la letra normal) ----
   {"LISTO", "DONE", "完成", "FET"},
   {"PERMISO", "PERMISSION", "权限", "PERMÍS"},
