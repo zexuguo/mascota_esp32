@@ -33,11 +33,12 @@ PISTA = {
 # La llamada: SOLO la de cada idioma, completa ("Clawd" a secas o "Hola Claude" no valen).
 # Se mira con el idioma que ha detectado Whisper. Las variantes son cómo lo suele escribir.
 _NOMBRE = r"(clawd|claude|clod|cloud|claud|clow|glod|klod)"
+_SEP = r"[\s,.!¡?¿]*"            # Whisper pone comas y signos: "¡Oye, Claude! ¡Baila!"
 LLAMADAS = {
-    "es": re.compile(r"^\s*(oye|oie)[\s,.!¡]*" + _NOMBRE + r"\b[\s,.!?¿]*", re.I),
-    "en": re.compile(r"^\s*(hey|hay)[\s,.!]*" + _NOMBRE + r"\b[\s,.!?]*", re.I),
-    "ca": re.compile(r"^\s*(ei|ey|hei|hey)[\s,.!]*" + _NOMBRE + r"\b[\s,.!?]*", re.I),
-    "zh": re.compile(r"^\s*(嘿|黑|嗨|hey)[\s,，、。!！]*(" + _NOMBRE[1:-1] + r"|克劳德|克劳迪|可劳德|克劳)[\s,，、。.!！?？]*", re.I),
+    "es": re.compile(r"^" + _SEP + r"(oye|oie)" + _SEP + _NOMBRE + r"\b" + _SEP, re.I),
+    "en": re.compile(r"^" + _SEP + r"(hey|hay|hei)( a)?" + _SEP + _NOMBRE + r"\b" + _SEP, re.I),   # "Hay a Cloud"
+    "ca": re.compile(r"^" + _SEP + r"(ei|ey|hei|hey)" + _SEP + _NOMBRE + r"\b" + _SEP, re.I),
+    "zh": re.compile(r"^[\s,，、。!！]*(嘿|黑|嗨|hey)[\s,，、。!！]*(" + _NOMBRE[1:-1] + r"|克劳德|克劳迪|可劳德|克劳)[\s,，、。.!！?？]*", re.I),
 }
 
 

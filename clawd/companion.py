@@ -606,11 +606,18 @@ class Companion:
             idioma = self.idioma
         finally:
             self.lock_whisper.release()
-        if sin_voz > 0.5 or seguridad < -1.0:
-            return                                     # ruido, o Whisper no está seguro: nada
         llano = solo_ascii(texto)
-        m = I.LLAMADAS.get(idioma, I.LLAMADAS["es"]).match(llano)   # la llamada de SU idioma
-        if not m:
+        # Vale la llamada de cualquiera de los 4 idiomas: con frases tan cortas Whisper se
+        # equivoca a menudo de idioma ("Oye Clawd" lo tomaba por inglés y buscaba "Hey Clawd").
+        m = None
+        for lang in [idioma] + [l for l in I.IDIOMAS if l != idioma]:
+            m = I.LLAMADAS[lang].match(llano)
+            if m:
+                break
+        oye_nombre = re.search(r"clawd|claude|clod|cloud|klod|克劳", llano, re.I)
+        if not m or sin_voz > 0.5 or seguridad < -1.0:
+            if oye_nombre:                             # casi: se apunta para poder ajustarlo
+                log(f"Casi Oye Clawd: {texto!r} (sin voz {sin_voz:.2f}, seguridad {seguridad:.2f})")
             return                                     # no era para Clawd: no se guarda nada
         resto = llano[m.end():].strip()
         log(f"Oye Clawd ({segundos:.1f} s): {texto!r}")
@@ -661,43 +668,42 @@ class Companion:
 
     # --- órdenes para Clawd (solo si la frase es corta) ---
     def orden_local(self, texto: str) -> bool:
-        idioma = self.idioma if self.idioma in I.IDIOMAS else IDIOMA_UI["actual"]
+        # Las órdenes se buscan en los 4 idiomas, empezando por el detectado: con frases
+        # cortas Whisper se equivoca de idioma ("baila" lo tomaba por inglés y no lo hacía).
+        detectado = self.idioma if self.idioma in I.IDIOMAS else IDIOMA_UI["actual"]
+        orden_idiomas = [detectado] + [l for l in I.IDIOMAS if l != detectado]
         t = normalizar(texto)
         oido = ascii_pantalla(texto)
-        # temporizador ("pon un temporizador de diez minutos", "set a timer for five minutes", "定时十分钟")
-        if re.search(I.TIMER[idioma], t) and I.frase_corta(t, idioma, 10):
-            segundos = 0 if re.search(I.CANCELAR[idioma], t) else I.segundos_de(t, idioma)
-            if segundos is not None:
-                respuesta = I.msg("timer_cancel", idioma) if segundos == 0 else \
-                            I.msg("timer_de", idioma, d=I.duracion_texto(segundos))
-                self.enviar({"oido": oido, "cuenta": 0, "mascota": 1})
-                self.enviar({"cmd": f"temporizador:{segundos}"})
-                self.enviar({"local": respuesta})
-                self.decir(respuesta, idioma)
-                log("Temporizador:", segundos, "s")
-                return True
-        if not I.frase_corta(t, idioma):
-            return False
-        for patron, cmd, respuesta in I.ORDENES[idioma]:
-            if re.search(patron, t):
-                self.enviar({"oido": oido, "cuenta": 0, "mascota": 1})
+
+        def hecho(idioma, cmd, respuesta, mascota=True):
+            self.enviar({"oido": oido, "cuenta": 0, **({"mascota": 1} if mascota else {})})
+            if cmd:
                 self.enviar({"cmd": cmd})
-                self.enviar({"local": respuesta})
-                self.decir(respuesta, idioma)
-                log("Orden para Clawd:", cmd)
-                return True
-        if re.search(I.QUE_HORA[idioma], t):
-            respuesta = I.msg("son_las", idioma, h=f"{datetime.datetime.now():%H:%M}")
-            self.enviar({"oido": oido, "cuenta": 0})
             self.enviar({"local": respuesta})
             self.decir(respuesta, idioma)
+            log("Orden para Clawd:", cmd or respuesta)
             return True
-        if re.search(I.CONV_NUEVA[idioma], t):
-            self.sesion = None
-            self.f_sesion.unlink(missing_ok=True)
-            self.enviar({"oido": oido, "cuenta": 0})
-            self.enviar({"local": I.msg("conv_nueva", idioma)})
-            return True
+
+        for idioma in orden_idiomas:
+            # temporizador ("pon un temporizador de diez minutos", "set a timer for five minutes", "定时十分钟")
+            if re.search(I.TIMER[idioma], t) and I.frase_corta(t, idioma, 10):
+                segundos = 0 if re.search(I.CANCELAR[idioma], t) else I.segundos_de(t, idioma)
+                if segundos is not None:
+                    respuesta = I.msg("timer_cancel", idioma) if segundos == 0 else \
+                                I.msg("timer_de", idioma, d=I.duracion_texto(segundos))
+                    return hecho(idioma, f"temporizador:{segundos}", respuesta)
+        for idioma in orden_idiomas:
+            if not I.frase_corta(t, idioma):
+                continue
+            for patron, cmd, respuesta in I.ORDENES[idioma]:
+                if re.search(patron, t):
+                    return hecho(idioma, cmd, respuesta)
+            if re.search(I.QUE_HORA[idioma], t):
+                return hecho(idioma, None, I.msg("son_las", idioma, h=f"{datetime.datetime.now():%H:%M}"), False)
+            if re.search(I.CONV_NUEVA[idioma], t):
+                self.sesion = None
+                self.f_sesion.unlink(missing_ok=True)
+                return hecho(idioma, None, I.msg("conv_nueva", idioma), False)
         return False
 
     # --- Claude Code ---
