@@ -358,7 +358,10 @@ void tr_decision(int y) {
 // {"trp": {"ok", "total", "inv", "cash", "gan", "gan_pct", "dia", "dia_pct", "pos": [[nombre, valor,
 //  % ganado, peso]], "otras", "hist": [...], "rango"}} cada 5 min (traderepublic.py en el PC)
 bool trp_conocido = false, trp_ok = false, trp_hay_dia = false;
-String trp_err, trp_rango;
+bool trp_prueba = false;        // datos inventados ("prueba": 1): esos sí se pueden capturar
+extern bool pedir_captura;
+String trp_err;
+float trp_dias = 0;            // días que abarca la gráfica (la historia la va guardando el PC)
 float trp_total = 0, trp_inv = 0, trp_cash = 0, trp_gan = 0, trp_gan_pct = 0, trp_dia = 0, trp_dia_pct = 0;
 struct TrpPos { String n; float v, pct, peso; };
 TrpPos trp_pos[10];
@@ -369,13 +372,14 @@ int trp_nh = 0;
 void trp_recibir(JsonObject o) {
   trp_conocido = true;
   trp_ok = (o["ok"] | 0) != 0;
+  trp_prueba = (o["prueba"] | 0) != 0;
   trp_err = o["err"] | "";
   if (!trp_ok) return;
   trp_total = o["total"] | 0.0f;  trp_inv = o["inv"] | 0.0f;  trp_cash = o["cash"] | 0.0f;
   trp_gan = o["gan"] | 0.0f;      trp_gan_pct = o["gan_pct"] | 0.0f;
   trp_hay_dia = !o["dia"].isNull();
   trp_dia = o["dia"] | 0.0f;      trp_dia_pct = o["dia_pct"] | 0.0f;
-  trp_rango = o["rango"] | "";
+  trp_dias = o["rango"] | 0.0f;
   trp_npos = 0;
   for (JsonVariant p : o["pos"].as<JsonArray>()) {
     if (trp_npos >= 10) break;
@@ -419,6 +423,18 @@ const uint16_t TRP_COLORES[] = {C565(215, 119, 87), C565(112, 190, 110), C565(23
                                 C565(190, 120, 200), C565(90, 190, 190), C565(220, 150, 150), C565(160, 160, 120)};
 
 void fotograma_trp() {
+  // PRIVACIDAD: una captura de pantalla (que acaba en un PNG del PC y puede acabar en un chat)
+  // nunca lleva tu cartera real: en ese fotograma se dibuja un aviso en su lugar.
+  if (pedir_captura && trp_ok && !trp_prueba) {
+    g.setFont(F_TXT);
+    g.setTextDatum(middle_center);
+    g.setTextColor(TXT2);
+    g.drawString(T("Pantalla privada"), 120, 150);
+    g.setFont(F_PEQ);
+    g.setTextColor(TXT3);
+    g.drawString(T("Tu cartera no sale en las capturas"), 120, 172);
+    return;
+  }
   if (!trp_conocido || !trp_ok) {
     g.setFont(F_PEQ);
     g.setTextDatum(middle_center);
@@ -474,7 +490,8 @@ void fotograma_trp() {
   g.setFont(F_PEQ);
   g.setTextDatum(top_left);
   g.setTextColor(TXT3);
-  g.drawString(trp_rango == "1m" ? T("último mes") : trp_rango, GX, GY + GH + 2);
+  if (trp_dias < 1) g.drawString(T("hoy · la gráfica se va llenando"), GX, GY + GH + 2);
+  else g.drawString(String(T("últimos ")) + String((int)lroundf(trp_dias)) + T(" días"), GX, GY + GH + 2);
   // invertido, efectivo y ganancia frente a lo pagado
   y = GY + GH + 18;
   g.setTextColor(TXT3);

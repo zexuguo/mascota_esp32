@@ -16,7 +16,9 @@ from pathlib import Path
 
 CARPETA = Path.home() / ".local/state/clawd/traderepublic"
 COOKIES = CARPETA / "cookies.txt"
-RANGO_HISTORIA = "1m"           # gráfica del último mes
+HISTORIA = CARPETA / "historia.json"   # [[segundos, total], ...] que va guardando Clawd
+DIAS_HISTORIA = 31
+CADA_S = 30 * 60                # un punto cada 30 min
 
 
 def _num(x) -> float:
@@ -26,30 +28,32 @@ def _num(x) -> float:
         return 0.0
 
 
-def _serie(respuesta) -> list[float]:
-    """Saca los valores de la respuesta de portfolioAggregateHistory (formato no documentado:
-    se busca la primera lista de puntos con un campo numérico conocido)."""
-    def buscar(o):
-        if isinstance(o, list) and o and isinstance(o[0], dict):
-            for campo in ("close", "value", "netValue", "price", "amount"):
-                if campo in o[0]:
-                    return [_num(p.get(campo)) for p in o]
-        if isinstance(o, dict):
-            for v in o.values():
-                r = buscar(v)
-                if r:
-                    return r
-        return None
-    return buscar(respuesta) or []
+def _apuntar(total: float) -> list:
+    """Guarda el total en la historia local (solo para ti: 600) y la devuelve."""
+    import os
+    try:
+        hist = json.loads(HISTORIA.read_text())
+    except (OSError, ValueError):
+        hist = []
+    ahora = int(time.time())
+    if not hist or ahora - hist[-1][0] >= CADA_S:
+        hist.append([ahora, round(total, 2)])
+    else:
+        hist[-1] = [hist[-1][0], round(total, 2)]          # el último punto, al día
+    hist = [h for h in hist if ahora - h[0] <= DIAS_HISTORIA * 86400]
+    nuevo = HISTORIA.with_suffix(".tmp")
+    nuevo.write_text(json.dumps(hist))
+    os.chmod(nuevo, 0o600)
+    nuevo.replace(HISTORIA)
+    return hist
 
 
 async def _leer(tr) -> dict:
     from pytr.tickers import fetch_instrument_details, fetch_tickers
     await tr.compact_portfolio()
     await tr.cash()
-    await tr.portfolio_history(RANGO_HISTORIA)
-    posiciones, efectivo, historia = [], [], []
-    faltan = 3
+    posiciones, efectivo = [], []
+    faltan = 2
     while faltan:
         sid, sub, resp = await asyncio.wait_for(tr.recv(), timeout=30)
         tipo = sub["type"]
@@ -62,25 +66,24 @@ async def _leer(tr) -> dict:
         elif tipo == "cash":
             efectivo = resp
             faltan -= 1
-        elif tipo == "portfolioAggregateHistory":
-            historia = _serie(resp)
-            faltan -= 1
         await tr.unsubscribe(sid)
     await fetch_instrument_details(tr, posiciones)
     await fetch_tickers(tr, posiciones)
-    # el cierre de ayer de cada posición, para el cambio de hoy (si el ticker lo trae)
+    # por posición: el cierre de ayer (para el «hoy»). Si una petición falla, se sigue con lo
+    # demás (Trade Republic cambia sus temas sin avisar: los de historial ya no existen).
     for p in posiciones:
         if "price" not in p or not p.get("exchangeIds"):
             continue
+        bolsa = p["exchangeIds"][0]
         try:
-            sid = await tr.ticker(p["instrumentId"], p["exchangeIds"][0])
+            sid = await tr.ticker(p["instrumentId"], bolsa)
             _, _, resp = await asyncio.wait_for(tr.recv(), timeout=10)
-            p["_ayer"] = resp.get("pre", {}).get("price")
+            p["_ayer"] = (resp.get("pre") or {}).get("price")
             await tr.unsubscribe(sid)
         except Exception:
             pass
     await tr.close()
-    return {"posiciones": posiciones, "efectivo": efectivo, "historia": historia}
+    return {"posiciones": posiciones, "efectivo": efectivo}
 
 
 def leer() -> dict:
@@ -110,10 +113,12 @@ def leer() -> dict:
     con_ayer = [p for p in pos if p["a"]]
     dia = sum(p["v"] - p["a"] for p in con_ayer) if con_ayer else None
     base_dia = sum(p["a"] for p in con_ayer) if con_ayer else None
-    hist = datos["historia"]
+    puntos = _apuntar(invertido + efectivo)
+    hist = [v for _, v in puntos]
     if len(hist) > 48:                                   # 48 puntos como mucho
         paso = len(hist) / 48
         hist = [hist[int(i * paso)] for i in range(47)] + [hist[-1]]
+    dias = (puntos[-1][0] - puntos[0][0]) / 86400 if len(puntos) > 1 else 0
     out = {
         "ok": 1, "t": int(time.time()),
         "total": round(invertido + efectivo, 2), "inv": round(invertido, 2), "cash": round(efectivo, 2),
@@ -124,7 +129,7 @@ def leer() -> dict:
         "pos": [[p["n"], round(p["v"], 2), round(100 * (p["v"] / p["c"] - 1), 1) if p["c"] else 0,
                  round(p["v"] / invertido, 3) if invertido else 0] for p in pos[:10]],
         "otras": len(pos) - min(len(pos), 10),
-        "hist": [round(x, 2) for x in hist], "rango": RANGO_HISTORIA,
+        "hist": [round(x, 2) for x in hist], "rango": round(dias, 1),   # días que abarca la gráfica
     }
     return out
 
