@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess", "websocket-client", "pytr==0.4.10"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -42,6 +42,8 @@ import serial
 
 import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
 import ajedrez as AJ          # revisión de partidas de chess.com (ajedrez.py, al lado)
+import trading as TR          # el bot de trading, solo lectura (trading.py, al lado)
+import traderepublic as TRP   # tu cartera de Trade Republic, solo lectura (traderepublic.py)
 import config_local as CFG    # IPs, MAC y usuarios: fuera del repo (ver config_local.py)
 IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
 
@@ -515,6 +517,13 @@ class Companion:
         elif ev == "voz_auto_fin" and self.grabacion == "auto":
             audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev == "tr:ops":                          # la tabla de operaciones del bot
+            threading.Thread(target=lambda: self.enviar({"tr_ops": TR.operaciones()}), daemon=True).start()
+        elif ev and ev.startswith("tr:op:"):          # la ficha de una operación (n = posición)
+            threading.Thread(target=self.trading_ficha, args=(int(ev[6:]),), daemon=True).start()
+        elif ev and ev.startswith("tr:"):            # la pantalla del bot pide un par: "tr:ETH/USDC:4H"
+            _, nombre, bar = (ev.split(":") + ["1H"])[:3]
+            threading.Thread(target=self.trading_par, args=(nombre, bar), daemon=True).start()
         elif ev == "sobremesa:encender":
             self.encender_sobremesa()
         elif ev == "aj:resumen" and self.aj:
@@ -590,11 +599,13 @@ class Companion:
             log("orden.json no vale:", e)
             pasos = []
         f.unlink(missing_ok=True)
+        hubo_prueba_tr = False
         for p in pasos:
             if "cmd" in p:
                 self.enviar({"cmd": p["cmd"]})
             if "enviar" in p:
                 self.enviar(p["enviar"])
+                hubo_prueba_tr |= "trp" in p["enviar"]
             if "esperar" in p:
                 time.sleep(float(p["esperar"]))
             if "decir" in p:
@@ -604,6 +615,10 @@ class Companion:
                          "url": "x/prueba", "white": {"username": AJ.USUARIO, "result": "win"},
                          "black": {"username": "prueba", "result": "lose"}, "time_class": "prueba"}
                 self.ajedrez_analizar(juego, nuevo=True, guardar=False)
+        # una prueba con datos inventados de Trade Republic: devolver en el acto los reales,
+        # para que nunca se queden en la placa unas posiciones que no son de zexu
+        if hubo_prueba_tr and getattr(self, "trp_ultimo", None):
+            self.enviar({"trp": self.trp_ultimo})
 
     # --- voz -> texto ---
     def transcribir(self, audio: bytes, guardar: bool = True, pista: bool = True) -> str:
@@ -971,6 +986,63 @@ class Companion:
                         pass
         log("Sobremesa: paquete de encendido enviado")
 
+    # --- el bot de trading (solo lectura): resumen para el panel y un par para la gráfica ---
+    def trading_par(self, nombre: str, bar: str):
+        if nombre not in TR.PARES or not TR.disponible():
+            return
+        try:
+            self.enviar({"tr": TR.par(nombre, bar)})
+        except Exception as e:                         # sin red: la placa enseña lo último que tenga
+            log("trading: no pude leer", nombre, e)
+            self.enviar({"tr": {"par": nombre, "bar": bar, "err": "sin red"}})
+
+    def trading_ficha(self, n: int):
+        try:
+            ficha, texto = TR.operacion(n)
+            self.enviar({"tr_op": ficha})
+            self.enviar({"tr_opt": texto})
+        except Exception as e:
+            log("trading: no pude hacer la ficha", n, e)
+            self.enviar({"tr_op": {"id": n, "err": "sin datos"}})
+
+    def vigilar_trading(self):
+        if not TR.disponible():
+            return                                     # sin el bot en este PC: no hay nada que enseñar
+        threading.Thread(target=TR.EnVivo(self.enviar, log).correr, daemon=True).start()
+        while True:
+            try:
+                precios = {}
+                for p in TR.PARES:
+                    v = TR.velas(p)
+                    if v:
+                        precios[p] = v[-1][4]
+                self.enviar({"tr_res": TR.resumen(precios)})
+            except Exception as e:
+                log("trading: resumen fallido:", e)
+            time.sleep(60)
+
+    # --- Trade Republic (solo lectura, con la sesión de tr_login.py; nunca inicia sesión solo) ---
+    def vigilar_traderepublic(self):
+        ultimo, sesion_vista = {}, None
+        while True:
+            try:
+                marca = TRP.COOKIES.stat().st_mtime if TRP.COOKIES.exists() else None
+                # sin sesión válida: no insistir hasta que cambien las cookies (nuevo tr_login.py)
+                if ultimo.get("ok") == 0 and marca == sesion_vista:
+                    self.enviar({"trp": ultimo})
+                    time.sleep(60)
+                    continue
+                sesion_vista = marca
+                ultimo = TRP.leer()
+                if not ultimo.get("ok"):
+                    log("Trade Republic:", ultimo.get("err"))
+            except Exception as e:
+                log("Trade Republic: no pude leer la cartera:", e)
+                ultimo = {"ok": 0, "err": "error al leer (ver el registro)"}
+            self.trp_ultimo = ultimo
+            self.enviar({"trp": ultimo})
+            time.sleep(300 if ultimo.get("ok") else 60)
+
     def vigilar_sobremesa(self):
         if not self.SOBREMESA_IP:
             return                                     # sin configurar: no hay sobremesa que vigilar
@@ -1062,6 +1134,8 @@ class Companion:
         threading.Thread(target=self.vigilar, daemon=True).start()
         threading.Thread(target=self.vigilar_ajedrez, daemon=True).start()
         threading.Thread(target=self.vigilar_sobremesa, daemon=True).start()
+        threading.Thread(target=self.vigilar_trading, daemon=True).start()
+        threading.Thread(target=self.vigilar_traderepublic, daemon=True).start()
         avisado = False
         while True:
             try:
