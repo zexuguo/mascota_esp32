@@ -197,12 +197,13 @@ const char *const VERBOS[] = {
 const int N_VERBOS = sizeof(VERBOS) / sizeof(VERBOS[0]);
 
 // ---------- El sobremesa (IA local) ----------
-bool sm_on = false;
+bool sm_on = false, sm_ia = false, sm_conocido = false;
+uint32_t sm_encendiendo = 0;      // cuándo se pidió encenderlo (0 = no)
 String sm_modelo;
 int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
 
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
-enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_AJEDREZ };
+enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS };
 Pantalla pantalla = PANT_MASCOTA;
 
 // ---------- Monitor de Claude Code (lo que hace en el PC) ----------
@@ -523,6 +524,9 @@ void al_mensaje(JsonDocument &doc) {
   if (doc["sobremesa"].is<JsonObject>()) {         // el sobremesa (IA local)
     JsonObject o = doc["sobremesa"];
     sm_on = (o["on"] | 0) != 0;
+    sm_ia = (o["ia"] | 0) != 0;
+    sm_conocido = true;
+    if (sm_on) sm_encendiendo = 0;
     sm_modelo = o["modelo"] | "";
     sm_gpu = o["gpu"] | -1;
     sm_temp = o["temp"] | 0;
@@ -573,9 +577,16 @@ void al_tocar(int x, int y) {
     aviso(T("Bien hecho!"));
     return;
   }
+  if (y > PANEL_Y && pagina == 3 && !sm_on && !sm_encendiendo) {   // sobremesa apagado: encenderlo
+    pc_enviar("sobremesa:encender");
+    sm_encendiendo = ahora;
+    prox_pagina = ahora + 90000;                 // quedarse aquí mientras arranca
+    SONAR(S_CLIC);
+    return;
+  }
   if (y > PANEL_Y) {                             // panel: siguiente página
     pagina = (pagina + 1) % 4;
-    if (pagina == 3 && !sm_on) pagina = 0;
+    if (pagina == 3 && !sm_conocido) pagina = 0;
     prox_pagina = ahora + 12000;
     SONAR(S_CLIC);
     return;
@@ -632,7 +643,7 @@ void cmd_local(const String &c) {
   else if (c == "claude")    { pantalla = PANT_CLAUDE; }
   else if (c == "captura")   { pedir_captura = true; }
 
-  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, 5); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
+  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, 4); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
   else if (c == "cortina")   { cortina_obj = cortina_obj > 0.5f ? 0 : 1; }
   else if (c == "escuchar")  { if (voz == VOZ_NO) { voz_empezar(false); voz_auto = true; voz_ultimo_sonido = ahora; } }
   else if (c == "reloj")     { reloj_abierto = true; cortina_obj = 0; rueda_modo = 0; }
@@ -650,8 +661,8 @@ void cmd_local(const String &c) {
   else if (c == "prueba:susto") { reaccionar(R_SUSTO, 1500); saltar(10); }
   else if (c == "prueba:jugar") { fase = F_JUGANDO; }
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
-  else if (c.startsWith("aj:ir:")) { aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
-  else if (c == "aj:resumen") { aj_vista = 0; }
+  else if (c.startsWith("aj:ir:")) { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
+  else if (c == "aj:resumen") { pantalla = PANT_JUEGOS; juego = J_AJEDREZ; aj_vista = 0; }
   else if (c.startsWith("panel:")) { pagina = c.substring(6).toInt(); prox_pagina = ahora + 20000; }   // pruebas
   else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
   else if (c.startsWith("idioma:")) {
@@ -706,7 +717,7 @@ enum Gesto { G_NADA, G_DUDA, G_DESLIZAR, G_ARRASTRAR, G_MANTENER, G_CORTINA, G_B
 Gesto gesto = G_NADA;
 uint32_t fallos_tactil = 0;                 // lecturas seguidas sin dedo
 uint32_t indicador_hasta = 0;               // puntitos de "en qué pantalla estás"
-const int N_PANTALLAS = 6;
+const int N_PANTALLAS = 5;
 const int DOCK_W = 240 / N_PANTALLAS;       // ancho de cada icono del dock de la cortina
 const int BARRA_H = 24;                     // la barra de estado de arriba
 
@@ -727,7 +738,6 @@ void ir_a_pantalla_n(int n, int dir) {
   pantalla = (Pantalla)n;
   if (pantalla == PANT_JUEGOS) { juego = J_MENU; fase = F_LISTO; }
   if (pantalla == PANT_GALAXIA) gal_desde = ahora;
-  if (pantalla == PANT_AJEDREZ && aj_estado == 0) pc_enviar("aj:resumen");   // ¿hay alguna partida ya analizada?
   term_actividad = ahora;
   term_scroll = 0;
   indicador_hasta = ahora + 1200;
@@ -853,7 +863,7 @@ void leer_tactil() {
     // la rueda del temporizador: se agarra en cuanto apoyas el dedo en el anillo
     if (!abierta && reloj_abierto && temp == T_PARADO && en_rueda(ux, uy)) { gesto = G_RUEDA; rueda_empezar(ux, uy); }
     // en los juegos se reacciona al APOYAR el dedo (no al soltarlo): más rápido
-    if (!abierta && !reloj_abierto && !perm_activo && pantalla == PANT_JUEGOS && !toque_aviso && uy >= 48) {
+    if (!abierta && !reloj_abierto && !perm_activo && pantalla == PANT_JUEGOS && juego != J_AJEDREZ && !toque_aviso && uy >= 48) {
       juego_toque(ux, uy, ahora);
       interaccion();
     }
@@ -951,7 +961,7 @@ void leer_tactil() {
       else if (reloj_abierto && ty0 >= BARRA_H) reloj_toque(tx0, ty0);
       else if (ty0 < BARRA_H) { cortina_obj = 1; SONAR(S_CLIC); }   // tocar la barra: abre la cortina
       else if (pantalla == PANT_MASCOTA) al_tocar(tx0, ty0);
-      else if (pantalla == PANT_AJEDREZ) ajedrez_toque(tx0, ty0);
+      else if (pantalla == PANT_JUEGOS && juego == J_AJEDREZ) ajedrez_toque(tx0, ty0);
       else if (pantalla != PANT_JUEGOS) al_tocar_terminal(tx0, ty0);
     }
     gesto = G_NADA;
@@ -1224,7 +1234,6 @@ const char *const ICO_LUNA[]   = {"..XXX..", ".XX....", "XX.....", "XX.....", "X
 const char *const ICO_SOL[]    = {"X.X.X", ".XXX.", "XXXXX", ".XXX.", "X.X.X"};
 const char *const ICO_CERRAR[] = {"X...X", ".X.X.", "..X..", ".X.X.", "X...X"};
 const char *const ICO_AJUSTES[] = {"..X.X..", ".XXXXX.", "XX...XX", ".X...X.", "XX...XX", ".XXXXX.", "..X.X.."};
-const char *const ICO_PEON[]   = {"..X..", ".XXX.", ".XXX.", "..X..", ".XXX.", "XXXXX", "XXXXX"};
 const char *const PAT_FLECHA_IZQ[] = {"..X", ".XX", "XXX", ".XX", "..X"};
 const char *const PAT_FLECHA_DER[] = {"X..", "XX.", "XXX", "XX.", "X.."};
 const char *const ICO_DND[]     = {"..XXX..", ".XXXXX.", "XXXXXXX", "X.....X", "XXXXXXX", ".XXXXX.", "..XXX.."};
@@ -1410,10 +1419,11 @@ void dibujar_panel() {
     return;
   }
 
-  if (ahora > prox_pagina || (pagina == 3 && !sm_on)) {
+  if (sm_encendiendo && ahora - sm_encendiendo > 90000) sm_encendiendo = 0;   // no ha arrancado: se rinde
+  if (ahora > prox_pagina) {
     pagina = (pagina + 1) % 4;
     if (pagina == 2 && pc_bat < 0) pagina = 3;   // sin batería, se la salta
-    if (pagina == 3 && !sm_on) pagina = 0;       // el sobremesa, solo si está encendido
+    if (pagina == 3 && !sm_conocido) pagina = 0; // el sobremesa, cuando el companion ya lo ha mirado
     prox_pagina = ahora + 7000;
   }
   if (!pc_conectado()) {
@@ -1431,6 +1441,18 @@ void dibujar_panel() {
       fila_dato(T("Memoria"), String((int)pc_ram) + " %", pc_ram / 100, pc_ram > 90 ? ROJO : TXT2);
       break;
     case 3: {                                      // el sobremesa: modelo cargado, GPU y VRAM
+      if (!sm_on) {
+        if (sm_encendiendo)
+          fila_dato(T("Sobremesa"), T("encendiendo…"), (ahora - sm_encendiendo) / 90000.0f, AMARILLO);
+        else
+          fila_dato(T("Sobremesa"), T("apagado · toca"), 0, TXT3);
+        break;
+      }
+      if (!sm_ia) {                                // encendido pero sin IA (modo-juego)
+        fila_dato(T("Sobremesa"), String(T("IA parada")) + (sm_gpu >= 0 ? " · " + String(sm_temp) + "°C" : ""),
+                  (float)sm_vram / sm_vram_max, TXT2);
+        break;
+      }
       String modelo = sm_modelo.length() ? sm_modelo.substring(0, sm_modelo.indexOf(':') > 0 ? sm_modelo.indexOf(':') : sm_modelo.length())
                                          : String(T("libre"));
       String val = sm_gpu >= 0 ? modelo + " · " + String(sm_temp) + "°C" : modelo;
@@ -2401,7 +2423,7 @@ void dibujar_cortina() {
   }
 
   // dock: las 5 pantallas
-  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos"), T("Ajedrez")};
+  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos")};
   int yd = oy + CT_DOCK;
   for (int i = 0; i < N_PANTALLAS; i++) {
     int cxs = i * DOCK_W + DOCK_W / 2;
@@ -2413,7 +2435,6 @@ void dibujar_cortina() {
       case 2: patron(g, ICO_TERM, 5, cxs - 8, yd + 8, 2, c); break;
       case 3: patron(g, ICO_GALAX, 5, cxs - 9, yd + 8, 2, c); break;
       case 4: patron(g, ICO_MANDO, 5, cxs - 11, yd + 8, 2, c); break;
-      case 5: patron(g, ICO_PEON, 7, cxs - 5, yd + 4, 2, c); break;
     }
     g.setFont(F_PEQ);
     g.setTextDatum(top_center);
@@ -2511,6 +2532,7 @@ void dibujar_avisos() {
 //  La pantalla de los juegos
 // ============================================================
 void fotograma_juegos() {
+  if (juego == J_AJEDREZ) { fotograma_ajedrez(); return; }
   interaccion();                    // jugando no se duerme
   juego_actualizar(ahora);
   g.fillScreen(FONDO);
@@ -2613,7 +2635,6 @@ void loop() {
   else if (pantalla == PANT_CLAUDE) fotograma_claude();
   else if (pantalla == PANT_GALAXIA) fotograma_galaxia();
   else if (pantalla == PANT_JUEGOS) fotograma_juegos();
-  else if (pantalla == PANT_AJEDREZ) fotograma_ajedrez();
   else fotograma_terminal();
 
   // capas comunes, encima de cualquier pantalla

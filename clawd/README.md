@@ -170,7 +170,7 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
 
 ## Revisión de partidas de ajedrez (chess.com)
 - Cada 2 min el companion mira la **API pública de chess.com** (`TU_USUARIO`); al acabar una partida nueva,
-  la analiza y sale un aviso discreto. También: pantalla **Ajedrez** → *Analizar la última*.
+  la analiza y sale un aviso discreto. También: **Juegos → Ajedrez** → *Analizar la última*.
 - **El portátil no calcula**: las evaluaciones salen de la nube (primero la de **Lichess**, que ya tiene
   analizadas las posiciones típicas; si no, **stockfish.online**). `python-chess` solo lee la partida.
 - Clasificación al estilo chess.com por la probabilidad de ganar que pierdes con cada jugada
@@ -179,9 +179,14 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
   no idéntica (no publican su fórmula). Código en `ajedrez.py` (en el PC) y `src/ajedrez.h` (la pantalla).
 - En la placa: resumen (precisión y jugadas por tipo) → *Revisar* (jugada a jugada, flecha verde con la
   mejor) o *Mis errores* (salta solo por tus fallos). Abajo: ‹ atrás · centro = resumen · › adelante.
+  Tocar el título (‹ Revisión de partida) vuelve al menú de Juegos.
 
 ## El sobremesa (IA local)
 - Si el sobremesa está encendido, el panel de la mascota añade una página **Sobremesa**: el modelo de Ollama
   cargado (o "libre"), la temperatura de la GPU y la barra de VRAM usada. Si está apagado, la página no sale.
 - Sin instalar nada allí: la API de Ollama por Tailscale (`IP_DEL_SOBREMESA:11434/api/ps`) y `nvidia-smi` por
-  SSH (`usuario@sobremesa`), cada 15 s.
+  SSH (`usuario@sobremesa`), cada 15 s. "Encendido" = contesta el SSH; si Ollama no contesta, sale **IA parada**
+  (p. ej. `modo-juego`).
+- **Encenderlo desde la placa:** con el sobremesa apagado la página dice *apagado · toca*; al tocarla el companion
+  manda el paquete Wake-on-LAN (MAC `MAC_DEL_SOBREMESA`, tarjeta `eno1`) y la barra se pone amarilla hasta
+  90 s. Solo funciona **en casa** (misma red): fuera, el paquete no llega al sobremesa.

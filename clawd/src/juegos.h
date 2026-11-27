@@ -18,7 +18,10 @@
 
 extern Preferences ajustes;   // para guardar los récords
 
-enum Juego { J_MENU, J_VUELA, J_CORRE };
+enum Juego { J_MENU, J_VUELA, J_CORRE, J_AJEDREZ };
+void abrir_ajedrez();             // en ajedrez.h (la revisión de partidas)
+extern uint8_t aj_estado;
+extern float aj_acc[2];
 enum Fase { F_LISTO, F_JUGANDO, F_FIN };
 Juego juego = J_MENU;
 Fase fase = F_LISTO;
@@ -252,7 +255,8 @@ void corre_dibujar(LGFX_Sprite &g, uint32_t ahora) {
 
 // =============================================================== MENÚ y control
 // Botones del menú (en px de pantalla)
-const int BOT_X = 24, BOT_W = 192, BOT1_Y = 84, BOT2_Y = 180, BOT_H = 76;
+const int BOT_X = 24, BOT_W = 192, BOT1_Y = 72, BOT2_Y = 140, BOT3_Y = 208, BOT_H = 60;
+const char *const PAT_PEON[] = {"..X..", ".XXX.", ".XXX.", "..X..", ".XXX.", "XXXXX", "XXXXX"};
 
 void juegos_iniciar() {
   record_vuela = ajustes.getInt("rec_vuela", 0);
@@ -292,6 +296,7 @@ void juego_toque(int x, int y, uint32_t ahora) {
       if (juego == J_MENU) {
         if (y >= BOT1_Y && y < BOT1_Y + BOT_H) juego_empezar(J_VUELA);
         else if (y >= BOT2_Y && y < BOT2_Y + BOT_H) juego_empezar(J_CORRE);
+        else if (y >= BOT3_Y && y < BOT3_Y + BOT_H) abrir_ajedrez();
         return;
       }
       fase = F_JUGANDO;
@@ -320,16 +325,23 @@ void juego_dibujar(LGFX_Sprite &g, uint32_t ahora) {
     // botón VUELA
     caja_pixel(g, BOT_X / L, BOT1_Y / L, BOT_W / L, BOT_H / L, L, PANEL);
     bool aleta = (ahora / 300) % 2;
-    clawd_juego(g, 74, BOT1_Y + 54 - (aleta ? 4 : 0), aleta, PIERNAS_QUIETAS, false, false);
-    texto_pixel(g, T("VUELA"), 124 / L, (BOT1_Y + 16) / L, L, CREMA);
+    clawd_juego(g, 62, BOT1_Y + 46 - (aleta ? 4 : 0), aleta, PIERNAS_QUIETAS, false, false);
+    texto_pixel(g, T("VUELA"), 100 / L, (BOT1_Y + 12) / L, L, CREMA);
     snprintf(b, sizeof(b), "%s %d", T("RECORD"), record_vuela);
-    texto_pixel(g, b, 124 / 2, (BOT1_Y + 48) / 2, 2, GRIS);
+    texto_pixel(g, b, 100 / 2, (BOT1_Y + 40) / 2, 2, GRIS);
     // botón CORRE
     caja_pixel(g, BOT_X / L, BOT2_Y / L, BOT_W / L, BOT_H / L, L, PANEL);
-    clawd_juego(g, 74, BOT2_Y + 56, false, (ahora / 120) % 2 ? PIERNAS_A : PIERNAS_B, false, false);
-    texto_pixel(g, T("CORRE"), 124 / L, (BOT2_Y + 16) / L, L, CREMA);
+    clawd_juego(g, 62, BOT2_Y + 48, false, (ahora / 120) % 2 ? PIERNAS_A : PIERNAS_B, false, false);
+    texto_pixel(g, T("CORRE"), 100 / L, (BOT2_Y + 12) / L, L, CREMA);
     snprintf(b, sizeof(b), "%s %d", T("RECORD"), record_corre);
-    texto_pixel(g, b, 124 / 2, (BOT2_Y + 48) / 2, 2, GRIS);
+    texto_pixel(g, b, 100 / 2, (BOT2_Y + 40) / 2, 2, GRIS);
+    // botón AJEDREZ (la revisión de tus partidas de chess.com)
+    caja_pixel(g, BOT_X / L, BOT3_Y / L, BOT_W / L, BOT_H / L, L, PANEL);
+    patron(g, PAT_PEON, 7, 52, BOT3_Y + 16, L, CREMA);
+    texto_pixel(g, T("AJEDREZ"), 100 / L, (BOT3_Y + 12) / L, L, CREMA);
+    if (aj_estado == 2) snprintf(b, sizeof(b), "%s %d", T("PRECISION"), (int)aj_acc[0]);
+    else snprintf(b, sizeof(b), "CHESS.COM");
+    texto_pixel(g, b, 100 / 2, (BOT3_Y + 40) / 2, 2, GRIS);
     texto_centrado(g, T("DESLIZA PARA SALIR"), 284, 2, GRIS_OSC);
     return;
   }

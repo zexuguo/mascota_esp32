@@ -128,7 +128,8 @@ const Trad TRAD[] = {
   {"toca para parar", "tap to stop", "点击停止", "toca per aturar"},
   {"ÚLTIMOS PASOS", "LAST STEPS", "最近步骤", "DARRERS PASSOS"},
   // ---- ajedrez (nombres de chess.com en cada idioma) ----
-  {"Ajedrez", "Chess", "国际象棋", "Escacs"},
+  {"AJEDREZ", "CHESS", "国际象棋", "ESCACS"},
+  {"PRECISION", "ACCURACY", "准确度", "PRECISIO"},
   {"Brillante", "Brilliant", "妙着", "Brillant"},
   {"Mejor", "Best", "最佳", "Millor"},
   {"Excelente", "Excellent", "优秀", "Excel·lent"},
@@ -155,6 +156,9 @@ const Trad TRAD[] = {
   {"solo errores", "mistakes only", "只看失误", "només errors"},
   {"Sobremesa", "Desktop", "台式机", "Sobretaula"},
   {"libre", "idle", "空闲", "lliure"},
+  {"encendiendo…", "waking up…", "正在开机…", "encenent…"},
+  {"apagado · toca", "off · tap", "已关机 · 点按", "apagat · toca"},
+  {"IA parada", "AI stopped", "AI 已停止", "IA aturada"},
   // ---- títulos en píxeles (en chino se pintan con la letra normal) ----
   {"LISTO", "DONE", "完成", "FET"},
   {"PERMISO", "PERMISSION", "权限", "PERMÍS"},

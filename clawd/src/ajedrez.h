@@ -154,7 +154,8 @@ void aj_resumen() {
   g.setTextDatum(middle_left);
   g.setFont(F_GRANDE);
   g.setTextColor(TXT);
-  g.drawString(T("Revisión de partida"), 14, 42);
+  patron(g, PAT_FLECHA_IZQ, 5, 12, 37, 2, TXT2);   // ‹ volver a Juegos
+  g.drawString(T("Revisión de partida"), 26, 42);
   if (aj_estado == 0) {
     g.setFont(F_PEQ);
     g.setTextColor(TXT3);
@@ -293,6 +294,14 @@ void aj_tablero() {
   }
 }
 
+void abrir_ajedrez() {                   // desde el menú de Juegos
+  juego = J_AJEDREZ;
+  fase = F_LISTO;
+  aj_vista = 0;
+  if (aj_estado == 0) pc_enviar("aj:resumen");   // ¿hay alguna partida ya analizada?
+  SONAR(S_CLIC);
+}
+
 void fotograma_ajedrez() {
   g.fillScreen(FONDO);
   if (aj_vista == 1 && aj_estado == 2) aj_tablero();
@@ -307,6 +316,7 @@ void ajedrez_toque(int x, int y) {
   SONAR(S_CLIC);
   interaccion();
   if (aj_vista == 0) {
+    if (y < 60) { juego = J_MENU; return; }      // "‹ Revisión de partida": volver a Juegos
     if (aj_estado == 0 && y >= 266) { pc_enviar("aj:ultima"); aj_estado = 1; aj_progreso = 0; return; }
     if (aj_estado != 2 || y < 274) return;
     aj_errores = x < 120;                        // "Mis errores" o "Revisar"

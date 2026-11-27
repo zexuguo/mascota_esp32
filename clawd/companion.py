@@ -23,6 +23,7 @@ import os
 import queue
 import signal
 import json
+import socket
 import re
 import shutil
 import subprocess
@@ -151,6 +152,22 @@ def estado_claude() -> str:
 # ------------------------------------------------- vigilar a Claude Code
 PROYECTOS_CLAUDE = Path.home() / ".claude/projects"   # aquí apunta cada sesión, paso a paso
 TAPA = next(iter(Path("/proc/acpi/button/lid").glob("*/state")), None)
+
+
+def enchufado(bat) -> bool:
+    """psutil devuelve None si la batería está en su límite de carga ("Not charging"):
+    entonces se pregunta al cargador directamente."""
+    if bat is None:
+        return True                         # sin batería: es un sobremesa
+    if bat.power_plugged is not None:
+        return bool(bat.power_plugged)
+    for f in Path("/sys/class/power_supply").glob("A*/online"):
+        try:
+            if f.read_text().strip() == "1":
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def tapa_cerrada() -> bool:
@@ -427,7 +444,7 @@ class Companion:
                 "ct": round(max(temp_cpu(), temp_gpu)),
                 "ram": round(psutil.virtual_memory().percent),
                 "bat": round(bat.percent) if bat else -1,
-                "carga": int(bat.power_plugged) if bat else 1,
+                "carga": int(enchufado(bat)),
                 "h": ahora.hour, "m": ahora.minute, "s": ahora.second,
                 "dia": I.fecha(IDIOMA_UI["actual"], ahora),
                 "claude": estado_claude(),
@@ -480,6 +497,8 @@ class Companion:
         elif ev == "voz_auto_fin" and self.grabacion == "auto":
             audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev == "sobremesa:encender":
+            self.encender_sobremesa()
         elif ev == "aj:resumen" and self.aj:
             self.enviar({"aj": self.aj_resumen()})
         elif ev == "aj:ultima":
@@ -564,7 +583,7 @@ class Companion:
                 juego = {"pgn": f'[White "{AJ.USUARIO}"]\n[Black "prueba"]\n\n{p["ajedrez_pgn"]}',
                          "url": "x/prueba", "white": {"username": AJ.USUARIO, "result": "win"},
                          "black": {"username": "prueba", "result": "lose"}, "time_class": "prueba"}
-                self.ajedrez_analizar(juego, nuevo=True)
+                self.ajedrez_analizar(juego, nuevo=True, guardar=False)
 
     # --- voz -> texto ---
     def transcribir(self, audio: bytes, guardar: bool = True, pista: bool = True) -> str:
@@ -855,7 +874,7 @@ class Companion:
                 "mejor": p["mejor"], "mejor_uci": p["mejor_uci"], "eval": p["eval"],
                 "num": p["num"], "blancas": p["blancas"]}
 
-    def ajedrez_analizar(self, juego: dict, nuevo: bool):
+    def ajedrez_analizar(self, juego: dict, nuevo: bool, guardar: bool = True):
         if self.aj_ocupado:
             return
         self.aj_ocupado = True
@@ -868,7 +887,8 @@ class Companion:
                     ultimo[0] = p
                     self.enviar({"aj": {"estado": "analizando", "progreso": round(p, 2)}})
             r = AJ.analizar(juego, progreso)
-            AJ.guardar(r)
+            if guardar:                            # (las partidas de prueba no se guardan)
+                AJ.guardar(r)
             self.aj = r
             self.enviar({"aj": {**self.aj_resumen(), "nuevo": int(nuevo)}})
             log(f"Ajedrez: listo ({r['acc'][0]} % de precisión)")
@@ -908,14 +928,33 @@ class Companion:
     # --- el sobremesa (la "IA mixta"): ¿está encendido, qué modelo tiene cargado, cómo va la GPU? ---
     # Sin instalar nada allí: la API de Ollama por Tailscale y nvidia-smi por SSH (un usuario sin privilegios).
     SOBREMESA_IP = "IP_DEL_SOBREMESA"      # por IP: con el nombre, Ollama contesta 403
+    SOBREMESA_MAC = "MAC_DEL_SOBREMESA" # tarjeta de red por cable (eno1), para encenderlo
+
+    def encender_sobremesa(self):
+        """Wake-on-LAN: el "paquete mágico" (6 x FF + la MAC 16 veces) por difusión en la red de casa.
+        Solo funciona si el portátil está en la misma red que el sobremesa (en casa)."""
+        mac = bytes.fromhex(self.SOBREMESA_MAC.replace(":", ""))
+        paquete = b"\xff" * 6 + mac * 16
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            for destino in ("255.255.255.255", "192.168.1.255"):
+                for puerto in (9, 7):
+                    try:
+                        sk.sendto(paquete, (destino, puerto))
+                    except OSError:
+                        pass
+        log("Sobremesa: paquete de encendido enviado")
 
     def vigilar_sobremesa(self):
         while True:
             estado = {"on": 0}
             try:
+                # ¿encendido? (contesta el SSH por Tailscale, aunque la IA esté parada por modo-juego)
+                socket.create_connection((self.SOBREMESA_IP, 22), timeout=2).close()
+                estado = {"on": 1, "ia": 0}
                 with urllib.request.urlopen(f"http://{self.SOBREMESA_IP}:11434/api/ps", timeout=3) as r:
                     modelos = json.loads(r.read()).get("models", [])
-                estado = {"on": 1, "modelo": modelos[0]["name"] if modelos else ""}
+                estado.update(ia=1, modelo=modelos[0]["name"] if modelos else "")
                 out = subprocess.run(
                     ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "usuario@sobremesa",
                      "nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total "
