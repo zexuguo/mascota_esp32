@@ -167,3 +167,15 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
   `es_ES-sharvard`), comprobadas con Whisper; "Claude" se escribe como se pronuncia en cada una
   (Clod / Clawed / 克劳德 / Clòd) solo para la voz.
 - Añadir un texto nuevo: escribirlo con `T("...")` y añadir su fila a `TRAD` en `idiomas.h`.
+
+## Revisión de partidas de ajedrez (chess.com)
+- Cada 2 min el companion mira la **API pública de chess.com** (`TU_USUARIO`); al acabar una partida nueva,
+  la analiza y sale un aviso discreto. También: pantalla **Ajedrez** → *Analizar la última*.
+- **El portátil no calcula**: las evaluaciones salen de la nube (primero la de **Lichess**, que ya tiene
+  analizadas las posiciones típicas; si no, **stockfish.online**). `python-chess` solo lee la partida.
+- Clasificación al estilo chess.com por la probabilidad de ganar que pierdes con cada jugada
+  (Brillante = sacrificio que es la mejor o casi; Mejor; Excelente < 2 %; Buena < 5 %; Imprecisión < 10 %;
+  Error < 20 %; Error grave ≥ 20 %; Teoría; Forzada) y precisión por jugador. Muy parecida a la de chess.com,
+  no idéntica (no publican su fórmula). Código en `ajedrez.py` (en el PC) y `src/ajedrez.h` (la pantalla).
+- En la placa: resumen (precisión y jugadas por tipo) → *Revisar* (jugada a jugada, flecha verde con la
+  mejor) o *Mis errores* (salta solo por tus fallos). Abajo: ‹ atrás · centro = resumen · › adelante.

@@ -197,7 +197,7 @@ const char *const VERBOS[] = {
 const int N_VERBOS = sizeof(VERBOS) / sizeof(VERBOS[0]);
 
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
-enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS };
+enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_AJEDREZ };
 Pantalla pantalla = PANT_MASCOTA;
 
 // ---------- Monitor de Claude Code (lo que hace en el PC) ----------
@@ -393,6 +393,12 @@ extern bool avisos_abierto, ajustes_abierto;
 void ajustes_toque(int x, int y);
 void poner_idioma(Idioma i);
 void reloj_toque(int x, int y);
+void aj_recibir_resumen(JsonObject a);
+void aj_recibir_ply(JsonObject p);
+void ajedrez_toque(int x, int y);
+extern uint8_t aj_estado;
+extern int aj_vista;
+void aj_ir(int i);
 void permiso_toque(int x, int y);
 void avisos_toque(int x, int y);
 bool en_rueda(int x, int y);
@@ -509,6 +515,8 @@ void al_mensaje(JsonDocument &doc) {
     notificar(1, T("Claude pide permiso"), perm_herr + " · " + perm_proy);
   }
   if (doc["permiso_fin"].is<const char *>() && perm_id == doc["permiso_fin"].as<String>()) perm_activo = false;
+  if (doc["aj"].is<JsonObject>()) aj_recibir_resumen(doc["aj"]);       // ajedrez: el resumen
+  if (doc["aj_ply"].is<JsonObject>()) aj_recibir_ply(doc["aj_ply"]);  // ajedrez: una jugada
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
 }
 
@@ -609,7 +617,7 @@ void cmd_local(const String &c) {
   else if (c == "claude")    { pantalla = PANT_CLAUDE; }
   else if (c == "captura")   { pedir_captura = true; }
 
-  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, 4); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
+  else if (c.startsWith("pantalla:")) { int n = constrain(c.substring(9).toInt(), 0, 5); ir_a_pantalla_n(n, n > (int)pantalla ? 1 : -1); }
   else if (c == "cortina")   { cortina_obj = cortina_obj > 0.5f ? 0 : 1; }
   else if (c == "escuchar")  { if (voz == VOZ_NO) { voz_empezar(false); voz_auto = true; voz_ultimo_sonido = ahora; } }
   else if (c == "reloj")     { reloj_abierto = true; cortina_obj = 0; rueda_modo = 0; }
@@ -627,6 +635,8 @@ void cmd_local(const String &c) {
   else if (c == "prueba:susto") { reaccionar(R_SUSTO, 1500); saltar(10); }
   else if (c == "prueba:jugar") { fase = F_JUGANDO; }
   else if (c == "avisos")    { avisos_abierto = !avisos_abierto; }
+  else if (c.startsWith("aj:ir:")) { aj_vista = 1; aj_ir(c.substring(6).toInt()); }   // pruebas
+  else if (c == "aj:resumen") { aj_vista = 0; }
   else if (c == "ajustes")   { ajustes_abierto = !ajustes_abierto; }
   else if (c.startsWith("idioma:")) {
     String cod = c.substring(7);
@@ -680,7 +690,7 @@ enum Gesto { G_NADA, G_DUDA, G_DESLIZAR, G_ARRASTRAR, G_MANTENER, G_CORTINA, G_B
 Gesto gesto = G_NADA;
 uint32_t fallos_tactil = 0;                 // lecturas seguidas sin dedo
 uint32_t indicador_hasta = 0;               // puntitos de "en qué pantalla estás"
-const int N_PANTALLAS = 5;
+const int N_PANTALLAS = 6;
 const int DOCK_W = 240 / N_PANTALLAS;       // ancho de cada icono del dock de la cortina
 const int BARRA_H = 24;                     // la barra de estado de arriba
 
@@ -701,6 +711,7 @@ void ir_a_pantalla_n(int n, int dir) {
   pantalla = (Pantalla)n;
   if (pantalla == PANT_JUEGOS) { juego = J_MENU; fase = F_LISTO; }
   if (pantalla == PANT_GALAXIA) gal_desde = ahora;
+  if (pantalla == PANT_AJEDREZ && aj_estado == 0) pc_enviar("aj:resumen");   // ¿hay alguna partida ya analizada?
   term_actividad = ahora;
   term_scroll = 0;
   indicador_hasta = ahora + 1200;
@@ -924,6 +935,7 @@ void leer_tactil() {
       else if (reloj_abierto && ty0 >= BARRA_H) reloj_toque(tx0, ty0);
       else if (ty0 < BARRA_H) { cortina_obj = 1; SONAR(S_CLIC); }   // tocar la barra: abre la cortina
       else if (pantalla == PANT_MASCOTA) al_tocar(tx0, ty0);
+      else if (pantalla == PANT_AJEDREZ) ajedrez_toque(tx0, ty0);
       else if (pantalla != PANT_JUEGOS) al_tocar_terminal(tx0, ty0);
     }
     gesto = G_NADA;
@@ -1196,6 +1208,9 @@ const char *const ICO_LUNA[]   = {"..XXX..", ".XX....", "XX.....", "XX.....", "X
 const char *const ICO_SOL[]    = {"X.X.X", ".XXX.", "XXXXX", ".XXX.", "X.X.X"};
 const char *const ICO_CERRAR[] = {"X...X", ".X.X.", "..X..", ".X.X.", "X...X"};
 const char *const ICO_AJUSTES[] = {"..X.X..", ".XXXXX.", "XX...XX", ".X...X.", "XX...XX", ".XXXXX.", "..X.X.."};
+const char *const ICO_PEON[]   = {"..X..", ".XXX.", ".XXX.", "..X..", ".XXX.", "XXXXX", "XXXXX"};
+const char *const PAT_FLECHA_IZQ[] = {"..X", ".XX", "XXX", ".XX", "..X"};
+const char *const PAT_FLECHA_DER[] = {"X..", "XX.", "XXX", "XX.", "X.."};
 const char *const ICO_DND[]     = {"..XXX..", ".XXXXX.", "XXXXXXX", "X.....X", "XXXXXXX", ".XXXXX.", "..XXX.."};
 const char *const ICO_ZZ[]      = {"XXXX...", "..X....", ".X.XXX.", "XXXX.X.", "....X..", "...XXX."};
 const char *const ICO_ONDA[]    = {"....X....", "..X.X.X..", "X.X.X.X.X", "..X.X.X..", "....X...."};
@@ -2265,6 +2280,8 @@ void dibujar_permiso() {
   g.setTextDatum(top_left);
 }
 
+#include "ajedrez.h"
+
 // ============================================================
 //  La cortina (se dibuja encima de todo)
 // ============================================================
@@ -2357,7 +2374,7 @@ void dibujar_cortina() {
   }
 
   // dock: las 5 pantallas
-  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos")};
+  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos"), T("Ajedrez")};
   int yd = oy + CT_DOCK;
   for (int i = 0; i < N_PANTALLAS; i++) {
     int cxs = i * DOCK_W + DOCK_W / 2;
@@ -2369,6 +2386,7 @@ void dibujar_cortina() {
       case 2: patron(g, ICO_TERM, 5, cxs - 8, yd + 8, 2, c); break;
       case 3: patron(g, ICO_GALAX, 5, cxs - 9, yd + 8, 2, c); break;
       case 4: patron(g, ICO_MANDO, 5, cxs - 11, yd + 8, 2, c); break;
+      case 5: patron(g, ICO_PEON, 7, cxs - 5, yd + 4, 2, c); break;
     }
     g.setFont(F_PEQ);
     g.setTextDatum(top_center);
@@ -2568,6 +2586,7 @@ void loop() {
   else if (pantalla == PANT_CLAUDE) fotograma_claude();
   else if (pantalla == PANT_GALAXIA) fotograma_galaxia();
   else if (pantalla == PANT_JUEGOS) fotograma_juegos();
+  else if (pantalla == PANT_AJEDREZ) fotograma_ajedrez();
   else fotograma_terminal();
 
   // capas comunes, encima de cualquier pantalla

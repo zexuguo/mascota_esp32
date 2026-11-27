@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -39,6 +39,7 @@ import psutil
 import serial
 
 import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
+import ajedrez as AJ          # revisión de partidas de chess.com (ajedrez.py, al lado)
 IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
 
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -261,6 +262,8 @@ class Companion:
         self.permisos_enviados: set[str] = set()
         self.permiso_ultimo_envio = 0.0
         self.atascada_desde = 0.0            # desde cuándo la placa no lee (0 = lee bien)
+        self.aj = AJ.cargar_ultima()         # la última partida analizada
+        self.aj_ocupado = False
         self.captura_pantalla = 0
         CARPETA_ESTADO.mkdir(parents=True, exist_ok=True)
         self.f_sesion = CARPETA_ESTADO / "sesion"
@@ -476,6 +479,12 @@ class Companion:
         elif ev == "voz_auto_fin" and self.grabacion == "auto":
             audio, self.audio, self.grabacion = bytes(self.audio), bytearray(), None
             threading.Thread(target=self.procesar_llamada, args=(audio,), daemon=True).start()
+        elif ev == "aj:resumen" and self.aj:
+            self.enviar({"aj": self.aj_resumen()})
+        elif ev == "aj:ultima":
+            threading.Thread(target=self.ajedrez_ultima, daemon=True).start()
+        elif ev and ev.startswith("aj:ply:") and self.aj:
+            self.enviar({"aj_ply": self.aj_ply(int(ev[7:]))})
         elif ev == "voz_auto_cancelar" and self.grabacion == "auto":
             self.audio, self.grabacion = bytearray(), None
         elif ev and ev.startswith("idioma:"):        # Ajustes -> Idioma en la placa
@@ -550,6 +559,11 @@ class Companion:
                 time.sleep(float(p["esperar"]))
             if "decir" in p:
                 self.decir(p["decir"])
+            if "ajedrez_pgn" in p:                    # probar la revisión con una partida inventada
+                juego = {"pgn": f'[White "{AJ.USUARIO}"]\n[Black "prueba"]\n\n{p["ajedrez_pgn"]}',
+                         "url": "x/prueba", "white": {"username": AJ.USUARIO, "result": "win"},
+                         "black": {"username": "prueba", "result": "lose"}, "time_class": "prueba"}
+                self.ajedrez_analizar(juego, nuevo=True)
 
     # --- voz -> texto ---
     def transcribir(self, audio: bytes, guardar: bool = True, pista: bool = True) -> str:
@@ -826,6 +840,70 @@ class Companion:
             ui = IDIOMA_UI["actual"]
             self.decir(I.msg("permiso_voz", ui, h=p.get("herramienta", "?")), ui)
 
+    # --- ajedrez: detectar tus partidas nuevas de chess.com y analizarlas en la nube ---
+    def aj_resumen(self) -> dict:
+        r = AJ.resumen(self.aj)
+        r.pop("cuenta", None)                      # la placa lo cuenta ella (con las letras)
+        return {**r, "estado": "listo"}
+
+    def aj_ply(self, i: int) -> dict:
+        if i <= 0:
+            return {"i": 0, "fen": self.aj["inicio"]}
+        p = self.aj["plies"][min(i, len(self.aj["plies"])) - 1]
+        return {"i": i, "fen": p["fen"], "san": p["san"], "uci": p["uci"], "clase": p["clase"],
+                "mejor": p["mejor"], "mejor_uci": p["mejor_uci"], "eval": p["eval"],
+                "num": p["num"], "blancas": p["blancas"]}
+
+    def ajedrez_analizar(self, juego: dict, nuevo: bool):
+        if self.aj_ocupado:
+            return
+        self.aj_ocupado = True
+        try:
+            log("Ajedrez: analizando", juego.get("url"))
+            ultimo = [0.0]
+
+            def progreso(p):
+                if p - ultimo[0] >= 0.1 or p >= 1:
+                    ultimo[0] = p
+                    self.enviar({"aj": {"estado": "analizando", "progreso": round(p, 2)}})
+            r = AJ.analizar(juego, progreso)
+            AJ.guardar(r)
+            self.aj = r
+            self.enviar({"aj": {**self.aj_resumen(), "nuevo": int(nuevo)}})
+            log(f"Ajedrez: listo ({r['acc'][0]} % de precisión)")
+        except Exception as e:
+            log("Ajedrez: no he podido analizarla:", e)
+        finally:
+            self.aj_ocupado = False
+
+    def ajedrez_ultima(self):
+        try:
+            juegos = AJ.partidas_recientes()
+        except Exception as e:
+            log("Ajedrez: chess.com no contesta:", e)
+            return
+        if juegos:
+            self.ajedrez_analizar(juegos[-1], nuevo=True)
+
+    def vigilar_ajedrez(self):
+        """Cada 2 min mira si has terminado una partida nueva en chess.com."""
+        visto_f = AJ.CARPETA / "vista_hasta"
+        while True:
+            try:
+                juegos = AJ.partidas_recientes()
+                fin = max((j.get("end_time", 0) for j in juegos), default=0)
+                if not visto_f.exists():           # la primera vez: no analizar todo el historial
+                    AJ.CARPETA.mkdir(parents=True, exist_ok=True)
+                    visto_f.write_text(str(fin))
+                visto = int(visto_f.read_text() or 0)
+                nuevas = [j for j in juegos if j.get("end_time", 0) > visto]
+                if nuevas:
+                    visto_f.write_text(str(fin))
+                    self.ajedrez_analizar(nuevas[-1], nuevo=True)   # la más reciente
+            except Exception as e:
+                log("Ajedrez:", e)
+            time.sleep(120)
+
     # --- no dormirse mientras Claude trabaja (aunque cierres la tapa) ---
     def mantener_despierto(self, si: bool):
         if si and self.inhibidor is None:
@@ -892,6 +970,7 @@ class Companion:
         log(f"Companion de Clawd -> {PUERTO}  (Ctrl+C para salir)")
         threading.Thread(target=self.telemetria, daemon=True).start()
         threading.Thread(target=self.vigilar, daemon=True).start()
+        threading.Thread(target=self.vigilar_ajedrez, daemon=True).start()
         avisado = False
         while True:
             try:
