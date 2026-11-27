@@ -280,6 +280,8 @@ class Companion:
         self.permisos_enviados: set[str] = set()
         self.permiso_ultimo_envio = 0.0
         self.atascada_desde = 0.0            # desde cuándo la placa no lee (0 = lee bien)
+        self.reinicios_seguidos = 0          # reinicios sin 2 min seguidos de calma entre ellos
+        self.ultimo_reinicio = 0.0
         self.aj = AJ.cargar_ultima()         # la última partida analizada
         self.aj_ocupado = False
         self.captura_pantalla = 0
@@ -416,7 +418,19 @@ class Companion:
         s = self.s
         if not s:
             return
-        log("La placa lleva 8 s sin leer: la reinicio")
+        if time.time() - self.ultimo_reinicio > 120:   # llevaba un rato bien: cuenta nueva
+            self.reinicios_seguidos = 0
+        self.ultimo_reinicio = time.time()
+        self.reinicios_seguidos += 1
+        if self.reinicios_seguidos <= 3:
+            log("La placa lleva 8 s sin leer: la reinicio")
+        if self.reinicios_seguidos == 3:
+            # Reiniciarla no basta: algún chip de la placa (audio, táctil) se ha quedado
+            # mal y solo se arregla cortando la corriente. Un aviso, una vez.
+            log("Tres reinicios sin éxito: hay que desenchufarla")
+            subprocess.Popen(["notify-send", "-a", "Clawd", "Clawd no responde",
+                              "Desenchufa la placa 5 segundos y vuelve a enchufarla."],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with self.lock:
             s.dtr = False
             s.rts = True
@@ -425,7 +439,10 @@ class Companion:
         self.atascada_desde = 0.0
 
     def telemetria_una(self, vuelta: int):
-        if self.atascada_desde and time.time() - self.atascada_desde > 8:
+        # tras 3 intentos, reintentar solo cada minuto (por si se arregla sola)
+        en_racha = self.reinicios_seguidos >= 3 and time.time() - self.ultimo_reinicio < 120
+        limite = 60 if en_racha else 8
+        if self.atascada_desde and time.time() - self.atascada_desde > limite:
             self.reiniciar_placa()
         if True:
             # "estoy vivo": el hook de permisos solo usa la placa si el companion está en marcha
@@ -535,6 +552,8 @@ class Companion:
                 self.hablar_on = bool(d["habla"])
             if d.get("idioma") in I.IDIOMAS:
                 IDIOMA_UI["actual"] = d["idioma"]
+        elif ev == "usb_rescatado":
+            log("La placa se había quedado sorda (fallo del driver USB) y se ha recuperado sola")
         elif ev:
             log("Clawd:", ev)
 
