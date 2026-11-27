@@ -210,3 +210,97 @@ if __name__ == "__main__":              # probar a mano: uv run python trading.p
     print(json.dumps({**d, "v": f"{len(d.get('v', []))} velas"}, ensure_ascii=False, indent=1))
     print("bytes:", len(json.dumps({"tr": d})))
     print(json.dumps(resumen({nombre: d.get("p", 0)}), indent=1))
+
+
+# ------------------------------------------------------------------
+# En directo: precio por WebSocket (público, demo de OKX, sin claves)
+# y avisos SOLO cuando pasa algo de verdad (KISS): se llena una compra,
+# salta un stop o se alcanza un objetivo. Cada aviso, una sola vez.
+# ------------------------------------------------------------------
+WS_URL = "wss://wspap.okx.com:8443/ws/v5/public"     # la demo (los precios que ve el bot)
+AVISADOS = Path.home() / ".local/state/clawd/trading_avisos.json"
+
+
+class EnVivo:
+    def __init__(self, enviar, log=print):
+        self.enviar, self.log = enviar, log
+        self.precio: dict[str, float] = {}
+        self.pos: list = []
+        self.pos_leidas = 0.0
+        self.avisados = set(_json(AVISADOS, []))
+
+    def _posiciones(self) -> list:
+        if time.time() - self.pos_leidas > 30:        # el bot las cambia como mucho cada 30 min
+            self.pos = [p for p in _json(BOT / "data/posiciones.json", [])
+                        if p.get("estado") in ("abierta", "pendiente")]
+            self.pos_leidas = time.time()
+        return self.pos
+
+    def _avisar(self, clave: str, titulo: str, sub: str, bueno: bool):
+        if clave in self.avisados:
+            return
+        self.avisados.add(clave)
+        try:
+            AVISADOS.write_text(json.dumps(sorted(self.avisados)[-200:]))
+        except OSError:
+            pass
+        self.log("trading:", titulo, "·", sub)
+        self.enviar({"tr_ev": {"t": titulo, "s": sub, "bueno": int(bueno)}})
+
+    def revisar(self):
+        """¿Ha pasado algo con las órdenes del bot al precio de ahora?"""
+        for p in self._posiciones():
+            precio = self.precio.get(p["par"])
+            if not precio:
+                continue
+            nombre = p["par"].split("/")[0]
+            oid = p["orden_id"]
+            if p["estado"] == "pendiente" and precio <= p["precio_limite"]:
+                self._avisar(f"{oid}:compra", f"{nombre}: se compra",
+                             f"llegó a tu orden en {p['precio_limite']:g}", True)
+            elif p["estado"] == "abierta":
+                if p.get("stop_loss") and precio <= p["stop_loss"]:
+                    pnl = _pnl_abierta(p, p["stop_loss"])
+                    self._avisar(f"{oid}:stop:{p['stop_loss']}", f"{nombre}: salta el stop",
+                                 f"{p['stop_loss']:g} · {pnl:+.1f} USDC", pnl >= 0)
+                elif p.get("objetivo") and precio >= p["objetivo"]:
+                    pnl = _pnl_abierta(p, p["objetivo"])
+                    self._avisar(f"{oid}:objetivo", f"{nombre}: ¡objetivo!",
+                                 f"{p['objetivo']:g} · {pnl:+.1f} USDC", True)
+
+    def mensaje_placa(self) -> dict:
+        """{"trv": {"p": [BTC, ETH, SOL], "pnl": [...]}} — pnl solo cuenta si hay posición abierta."""
+        pnl = [0.0, 0.0, 0.0]
+        for p in self._posiciones():
+            if p["estado"] == "abierta" and p["par"] in self.precio and p.get("precio_entrada"):
+                pnl[PARES.index(p["par"])] = round(_pnl_abierta(p, self.precio[p["par"]]), 2)
+        return {"trv": {"p": [self.precio.get(x, 0) for x in PARES], "pnl": pnl}}
+
+    def correr(self):
+        import websocket                               # websocket-client
+        espera = 5
+        while True:
+            try:
+                ws = websocket.create_connection(WS_URL, timeout=30)
+                ws.send(json.dumps({"op": "subscribe", "args": [
+                    {"channel": "tickers", "instId": p.replace("/", "-")} for p in PARES]}))
+                self.log("trading: precio en directo conectado")
+                espera, ultimo_envio, ultimo_ping = 5, 0.0, time.time()
+                while True:
+                    if time.time() - ultimo_ping > 20:      # OKX cierra a los 30 s sin nada
+                        ws.send("ping")
+                        ultimo_ping = time.time()
+                    m = ws.recv()
+                    if m == "pong":
+                        continue
+                    d = json.loads(m)
+                    for t in d.get("data", []):
+                        self.precio[t["instId"].replace("-", "/")] = float(t["last"])
+                    if time.time() - ultimo_envio >= 1 and self.precio:   # a la placa, 1 vez por segundo
+                        ultimo_envio = time.time()
+                        self.revisar()
+                        self.enviar(self.mensaje_placa())
+            except Exception as e:
+                self.log(f"trading: precio en directo caído ({e}); reintento en {espera} s")
+                time.sleep(espera)
+                espera = min(espera * 2, 300)

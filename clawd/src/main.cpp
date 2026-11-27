@@ -414,6 +414,8 @@ extern bool tr_conocido, tr_4h;
 extern int tr_sel, tr_nv;
 void tr_recibir_resumen(JsonObject o);
 void tr_recibir(JsonObject o);
+void tr_recibir_vivo(JsonObject o);
+void tr_recibir_evento(JsonObject o);
 void tr_panel(String &val, float &frac, uint16_t &col);
 void abrir_trading();
 void trading_toque(int x, int y);
@@ -554,6 +556,8 @@ void al_mensaje(JsonDocument &doc) {
   if (doc["aj"].is<JsonObject>()) aj_recibir_resumen(doc["aj"]);       // ajedrez: el resumen
   if (doc["tr_res"].is<JsonObject>()) tr_recibir_resumen(doc["tr_res"]);   // bot de trading: resumen
   if (doc["tr"].is<JsonObject>()) tr_recibir(doc["tr"]);                 // bot de trading: un par
+  if (doc["trv"].is<JsonObject>()) tr_recibir_vivo(doc["trv"]);          // bot de trading: precio en directo
+  if (doc["tr_ev"].is<JsonObject>()) tr_recibir_evento(doc["tr_ev"]);    // bot de trading: stop, objetivo, compra
   if (doc["aj_ply"].is<JsonObject>()) aj_recibir_ply(doc["aj_ply"]);  // ajedrez: una jugada
   if (doc["cmd"].is<const char *>()) cmd_local(doc["cmd"].as<String>());
 }
@@ -801,7 +805,7 @@ bool avisos_abierto = false;               // la lista completa de avisos
 bool ajustes_abierto = false;              // Ajustes (el idioma)
 
 // Historial de avisos (lo último, primero)
-struct Notif { uint8_t tipo; String titulo, sub; uint32_t t; };   // 0 listo, 1 espera, 2 pomodoro
+struct Notif { uint8_t tipo; String titulo, sub; uint32_t t; };   // 0 listo, 1 espera, 2 pomodoro, 3 bot de trading
 const int MAX_NOTIFS = 6;
 Notif notifs[MAX_NOTIFS];
 int n_notifs = 0;
@@ -2449,7 +2453,7 @@ void dibujar_cortina() {
     g.drawString(T("Sin avisos"), 120, ya + 17);
   } else {
     const Notif &nt = notifs[0];
-    g.fillRect(18, ya + 14, 6, 6, nt.tipo == 0 ? VERDE : (nt.tipo == 1 ? AMARILLO : TXT2));
+    g.fillRect(18, ya + 14, 6, 6, nt.tipo == 0 ? VERDE : (nt.tipo == 1 ? AMARILLO : (nt.tipo == 3 ? CLAWD : TXT2)));
     g.setFont(F_PEQ);
     g.setTextColor(TXT);
     g.drawString(recortar(nt.titulo + " · " + duracion(ahora - nt.t), n_notifs > 1 ? 160 : 196), 32, ya + 17);
@@ -2530,7 +2534,9 @@ void avisos_toque(int x, int y) {
   if (y < 64 && x > 190) { avisos_abierto = false; return; }                        // la X
   if (y >= 278) { n_notifs = 0; avisos_abierto = false; aviso(T("Avisos borrados")); return; }   // "Borrar todo"
   if (y >= 70 && y < 70 + n_notifs * 34) {                                          // un aviso de Claude: ver el progreso
-    if (notifs[(y - 70) / 34].tipo != 2) ir_a_pantalla_n(PANT_CLAUDE, 1);
+    uint8_t tipo = notifs[(y - 70) / 34].tipo;
+    if (tipo == 3) abrir_trading();                                                // un aviso del bot: su gráfica
+    else if (tipo != 2) ir_a_pantalla_n(PANT_CLAUDE, 1);
     avisos_abierto = false;
   }
 }
@@ -2547,7 +2553,7 @@ void dibujar_avisos() {
     const Notif &nt = notifs[i];
     int y = 70 + i * 34;
     tarjeta(8, y, 224, 30);
-    g.fillRect(18, y + 12, 6, 6, nt.tipo == 0 ? VERDE : (nt.tipo == 1 ? AMARILLO : TXT2));
+    g.fillRect(18, y + 12, 6, 6, nt.tipo == 0 ? VERDE : (nt.tipo == 1 ? AMARILLO : (nt.tipo == 3 ? CLAWD : TXT2)));
     g.setFont(F_PEQ);
     g.setTextDatum(middle_left);
     g.setTextColor(TXT);

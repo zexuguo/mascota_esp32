@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess", "websocket-client"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -988,6 +988,7 @@ class Companion:
     def vigilar_trading(self):
         if not TR.disponible():
             return                                     # sin el bot en este PC: no hay nada que enseñar
+        threading.Thread(target=TR.EnVivo(self.enviar, log).correr, daemon=True).start()
         while True:
             try:
                 precios = {}

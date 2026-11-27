@@ -37,6 +37,10 @@ int tr_nm = 0;
 String tr_acc, tr_plan;
 int tr_dec_hace = -1;
 uint32_t tr_pedido = 0, tr_llegada = 0, tr_desde = 0;
+// en directo (WebSocket en el PC): último precio de cada par y cuándo cambió
+float tr_vivo[3] = {0, 0, 0}, tr_vivo_pnl[3] = {0, 0, 0};
+uint32_t tr_vivo_t = 0, tr_tick_t = 0;
+int tr_tick_dir = 0;                  // +1 subió, -1 bajó (la etiqueta se ilumina un momento)
 
 void tr_pedir() {
   char b[24];
@@ -52,6 +56,39 @@ void tr_recibir_resumen(JsonObject o) {
   tr_ab = o["ab"] | 0;       tr_pend = o["pend"] | 0;   tr_hace = o["hace"] | -1;
   tr_ok = (o["ok"] | 0) != 0;
   tr_prog = o["prog"] | 0.0f;
+}
+
+// {"trv": {"p": [BTC, ETH, SOL], "pnl": [...]}} cada segundo
+void tr_recibir_vivo(JsonObject o) {
+  JsonArray p = o["p"], pnl = o["pnl"];
+  for (int k = 0; k < 3; k++) {
+    float nuevo = p[k] | 0.0f;
+    if (nuevo <= 0) continue;
+    if (k == tr_sel && tr_vivo[k] > 0 && nuevo != tr_vivo[k]) { tr_tick_dir = nuevo > tr_vivo[k] ? 1 : -1; tr_tick_t = ahora; }
+    tr_vivo[k] = nuevo;
+    tr_vivo_pnl[k] = pnl[k] | 0.0f;
+  }
+  tr_vivo_t = ahora;
+  // la última vela del par que se ve se mueve con el precio
+  if (tr_nv > 0 && tr_par_cargado == TR_PARES[tr_sel] && tr_vivo[tr_sel] > 0) {
+    float v = tr_vivo[tr_sel];
+    tr_precio = v;
+    tr_v[tr_nv - 1][3] = v;
+    tr_v[tr_nv - 1][1] = max(tr_v[tr_nv - 1][1], v);
+    tr_v[tr_nv - 1][2] = min(tr_v[tr_nv - 1][2], v);
+    if (tr_st == "ab") tr_pos_pnl = tr_vivo_pnl[tr_sel];
+  }
+}
+
+// {"tr_ev": {"t": "ETH: ¡objetivo!", "s": "1772 · +19,5 USDC", "bueno": 1}}: pasa algo de verdad
+void aviso(const String &txt, uint32_t ms);
+void notificar(uint8_t tipo, const String &titulo, const String &sub);
+void tr_recibir_evento(JsonObject o) {
+  String t = o["t"] | "", sub = o["s"] | "";
+  bool bueno = (o["bueno"] | 0) != 0;
+  notificar(3, t, sub);
+  aviso(t + " · " + sub, 5000);
+  if (bueno) SONAR(S_LISTO); else SONAR(S_ERROR);
 }
 
 void tr_recibir(JsonObject o) {
@@ -223,7 +260,8 @@ void tr_grafica() {
     tr_linea_disc(x + 3, TR_GX + TR_GW, y, TXT2);
     float k = 0.5f + 0.5f * sinf(ahora / 260.0f);
     g.fillCircle(x, y, 2 + (int)(k * 2), TXT);
-    tr_etiqueta(y, tr_precio_txt(tr_precio), TXT, FONDO);
+    bool tick = ahora - tr_tick_t < 400;
+    tr_etiqueta(y, tr_precio_txt(tr_precio), tick ? (tr_tick_dir > 0 ? VERDE : ROJO) : TXT, FONDO);
   }
   g.drawRect(TR_GX - 1, TR_GY - 1, TR_GW + 2, TR_GH + 2, SUP);
   // separar las etiquetas: ordenarlas de arriba abajo y dejar 13 px entre ellas
@@ -289,6 +327,8 @@ void fotograma_trading() {
   g.setTextDatum(middle_right);
   g.setTextColor(tr_ok ? TXT3 : ROJO);
   g.drawString(tr_ok ? "demo" : T("parado"), 234, BARRA_H + 15);
+  if (ahora - tr_vivo_t < 3000)                  // punto que late: el precio llega en directo
+    g.fillCircle(234 - g.textWidth(tr_ok ? "demo" : T("parado")) - 7, BARRA_H + 15, 2 + ((ahora / 500) % 2), ROJO);
 
   if (!cargado) {
     g.setTextDatum(middle_center);
