@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
-# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess", "websocket-client"]
+# dependencies = ["pyserial", "psutil", "faster-whisper", "numpy", "piper-tts", "zhconv", "chess", "websocket-client", "pytr==0.4.10"]
 # ///
 """Companion de Clawd. Hace tres cosas a la vez:
 
@@ -43,6 +43,7 @@ import serial
 import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
 import ajedrez as AJ          # revisión de partidas de chess.com (ajedrez.py, al lado)
 import trading as TR          # el bot de trading, solo lectura (trading.py, al lado)
+import traderepublic as TRP   # tu cartera de Trade Republic, solo lectura (traderepublic.py)
 import config_local as CFG    # IPs, MAC y usuarios: fuera del repo (ver config_local.py)
 IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
 
@@ -1014,6 +1015,27 @@ class Companion:
                 log("trading: resumen fallido:", e)
             time.sleep(60)
 
+    # --- Trade Republic (solo lectura, con la sesión de tr_login.py; nunca inicia sesión solo) ---
+    def vigilar_traderepublic(self):
+        ultimo, sesion_vista = {}, None
+        while True:
+            try:
+                marca = TRP.COOKIES.stat().st_mtime if TRP.COOKIES.exists() else None
+                # sin sesión válida: no insistir hasta que cambien las cookies (nuevo tr_login.py)
+                if ultimo.get("ok") == 0 and marca == sesion_vista:
+                    self.enviar({"trp": ultimo})
+                    time.sleep(60)
+                    continue
+                sesion_vista = marca
+                ultimo = TRP.leer()
+                if not ultimo.get("ok"):
+                    log("Trade Republic:", ultimo.get("err"))
+            except Exception as e:
+                log("Trade Republic: no pude leer la cartera:", e)
+                ultimo = {"ok": 0, "err": "error al leer (ver el registro)"}
+            self.enviar({"trp": ultimo})
+            time.sleep(300 if ultimo.get("ok") else 60)
+
     def vigilar_sobremesa(self):
         if not self.SOBREMESA_IP:
             return                                     # sin configurar: no hay sobremesa que vigilar
@@ -1106,6 +1128,7 @@ class Companion:
         threading.Thread(target=self.vigilar_ajedrez, daemon=True).start()
         threading.Thread(target=self.vigilar_sobremesa, daemon=True).start()
         threading.Thread(target=self.vigilar_trading, daemon=True).start()
+        threading.Thread(target=self.vigilar_traderepublic, daemon=True).start()
         avisado = False
         while True:
             try:

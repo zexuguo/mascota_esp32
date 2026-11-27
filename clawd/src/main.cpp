@@ -211,7 +211,7 @@ String sm_modelo;
 int sm_gpu = -1, sm_temp = 0, sm_vram = 0, sm_vram_max = 1;
 
 // ---------- Pantallas: la mascota o la "terminal" de Claude Code ----------
-// PANT_TRADING: el bot de trading (6.º icono del dock, o tocando la página "Bot" del panel)
+// PANT_TRADING: Finanzas, el bot y Trade Republic (6.º icono del dock, o la página "Finanzas" del panel)
 enum Pantalla { PANT_MASCOTA, PANT_CLAUDE, PANT_TERMINAL, PANT_GALAXIA, PANT_JUEGOS, PANT_TRADING };
 Pantalla pantalla = PANT_MASCOTA;
 
@@ -422,6 +422,8 @@ void tr_recibir_opt(JsonObject o);
 void tr_abrir_tabla();
 void tr_abrir_ficha(int n);
 void tr_volver_grafica();
+void trp_recibir(JsonObject o);
+extern bool trp_conocido;
 void tr_panel(String &val, float &frac, uint16_t &col);
 void abrir_trading();
 void trading_toque(int x, int y);
@@ -564,6 +566,7 @@ void al_mensaje(JsonDocument &doc) {
   if (doc["tr"].is<JsonObject>()) tr_recibir(doc["tr"]);                 // bot de trading: un par
   if (doc["trv"].is<JsonObject>()) tr_recibir_vivo(doc["trv"]);          // bot de trading: precio en directo
   if (doc["tr_ev"].is<JsonObject>()) tr_recibir_evento(doc["tr_ev"]);    // bot de trading: stop, objetivo, compra
+  if (doc["trp"].is<JsonObject>()) trp_recibir(doc["trp"]);              // Trade Republic (solo lectura)
   if (doc["tr_ops"].is<JsonArray>()) tr_recibir_ops(doc["tr_ops"]);       // bot de trading: tabla de operaciones
   if (doc["tr_op"].is<JsonObject>()) tr_recibir_op(doc["tr_op"]);         // bot de trading: ficha (gráfica y cálculos)
   if (doc["tr_opt"].is<JsonObject>()) tr_recibir_opt(doc["tr_opt"]);      // bot de trading: ficha (razonamiento)
@@ -622,7 +625,7 @@ void al_tocar(int x, int y) {
   if (y > PANEL_Y) {                             // panel: siguiente página
     pagina = (pagina + 1) % 5;
     if (pagina == 3 && !sm_conocido) pagina = 4;
-    if (pagina == 4 && !tr_conocido) pagina = 0;
+    if (pagina == 4 && !tr_conocido && !trp_conocido) pagina = 0;
     prox_pagina = ahora + 12000;
     SONAR(S_CLIC);
     return;
@@ -703,7 +706,7 @@ void cmd_local(const String &c) {
   else if (c.startsWith("trading:op:")) { abrir_trading(); tr_abrir_ficha(c.substring(11).toInt()); }   // pruebas: una ficha
   else if (c.startsWith("trading:pag:")) { extern int tr_pag; tr_pag = c.substring(12).toInt(); }          // pruebas: página
   else if (c.startsWith("trading")) {             // pruebas: "trading", "trading:0" (BTC), "trading:2:1H" (SOL en 1 h)
-    if (c.length() > 8) { tr_sel = constrain(c.substring(8, 9).toInt(), 0, 2); tr_4h = !c.endsWith(":1H"); tr_nv = 0; }
+    if (c.length() > 8) { tr_sel = constrain(c.substring(8, 9).toInt(), 0, 3); tr_4h = !c.endsWith(":1H"); tr_nv = 0; }
     abrir_trading();
   }
   else if (c == "sobremesa:encender") { pantalla = PANT_MASCOTA; encender_sobremesa(); }   // = tocar "apagado · toca"
@@ -1471,7 +1474,7 @@ void dibujar_panel() {
     pagina = (pagina + 1) % 5;
     if (pagina == 2 && pc_bat < 0) pagina = 3;   // sin batería, se la salta
     if (pagina == 3 && !sm_conocido) pagina = 4; // el sobremesa, cuando el companion ya lo ha mirado
-    if (pagina == 4 && !tr_conocido) pagina = 0; // el bot de trading, si está en este PC
+    if (pagina == 4 && !tr_conocido && !trp_conocido) pagina = 0; // finanzas: el bot o Trade Republic
     prox_pagina = ahora + 7000;
   }
   if (!pc_conectado()) {
@@ -1511,7 +1514,7 @@ void dibujar_panel() {
     case 4: {                                      // el bot de trading: resultado y si hay algo abierto
       String val; float frac; uint16_t col;
       tr_panel(val, frac, col);
-      fila_dato(T("Bot"), val, frac, col);
+      fila_dato(T("Finanzas"), val, frac, col);
       break;
     }
     case 2:
@@ -2478,7 +2481,7 @@ void dibujar_cortina() {
   }
 
   // dock: las 6 pantallas
-  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos"), T("Bot")};
+  const char *nombres[N_PANTALLAS] = {"Clawd", "Claude", T("Voz"), T("Vault"), T("Juegos"), T("Finanzas")};
   int yd = oy + CT_DOCK;
   for (int i = 0; i < N_PANTALLAS; i++) {
     int cxs = i * DOCK_W + DOCK_W / 2;
@@ -2493,6 +2496,7 @@ void dibujar_cortina() {
       case 5: patron(g, ICO_VELAS, 6, cxs - 8, yd + 6, 2, c); break;
     }
     g.setFont(F_PEQ);
+    if (g.textWidth(nombres[i]) > DOCK_W - 2) g.setFont(&fonts::efontJA_10);   // "Finanzas" no cabe en 12
     g.setTextDatum(top_center);
     g.setTextColor(c);
     g.drawString(nombres[i], cxs, yd + 25);

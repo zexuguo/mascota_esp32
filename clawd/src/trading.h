@@ -24,7 +24,8 @@ bool tr_ok = false;
 
 // ---- el par que se ve ----
 const char *const TR_PARES[] = {"BTC/USDC", "ETH/USDC", "SOL/USDC"};
-int tr_sel = 1;                 // ETH
+int tr_sel = 3;                 // 0-2 los pares del bot, 3 = Trade Republic (lo primero que se ve)
+const char *tr_par_sel() { return tr_sel < 3 ? TR_PARES[tr_sel] : ""; }
 bool tr_4h = true;              // 4 h por defecto: ahí se ven sus compras y ventas
 const int TR_MAXV = 48;
 float tr_v[TR_MAXV][4];         // o, h, l, c
@@ -73,8 +74,9 @@ uint32_t tr_op_pedido = 0;
 int tr_gy = 84, tr_gh = 124;    // dónde va la gráfica (en la ficha, más pequeña)
 
 void tr_pedir() {
+  if (tr_sel > 2) return;
   char b[24];
-  snprintf(b, sizeof(b), "tr:%s:%s", TR_PARES[tr_sel], tr_4h ? "4H" : "1H");
+  snprintf(b, sizeof(b), "tr:%s:%s", tr_par_sel(), tr_4h ? "4H" : "1H");
   pc_enviar(b);
   tr_pedido = ahora;
 }
@@ -100,7 +102,7 @@ void tr_recibir_vivo(JsonObject o) {
   }
   tr_vivo_t = ahora;
   // la última vela del par que se ve se mueve con el precio
-  if (tr_vista == 0 && tr_nv > 0 && tr_par_cargado == TR_PARES[tr_sel] && tr_vivo[tr_sel] > 0) {
+  if (tr_vista == 0 && tr_nv > 0 && tr_par_cargado == tr_par_sel() && tr_vivo[tr_sel] > 0) {
     float v = tr_vivo[tr_sel];
     tr_precio = v;
     tr_v[tr_nv - 1][3] = v;
@@ -124,7 +126,7 @@ void tr_recibir_evento(JsonObject o) {
 void tr_recibir(JsonObject o) {
   String par = o["par"] | "";
   bool es_4h = String(o["bar"] | "1H") == "4H";
-  if (tr_vista != 0 || par != TR_PARES[tr_sel] || es_4h != tr_4h) return;   // llegó tarde o se ve otra cosa
+  if (tr_vista != 0 || par != tr_par_sel() || es_4h != tr_4h) return;   // llegó tarde o se ve otra cosa
   tr_llegada = ahora;
   tr_err = o["err"] | "";
   if (tr_err.length()) return;                              // sin red: se queda lo último
@@ -178,7 +180,17 @@ String tr_hace_txt(int min) {
 
 // ---- panel de la mascota: una línea con lo esencial ----
 // devuelve el texto y el color para fila_dato()
+extern bool trp_ok, trp_hay_dia;
+extern float trp_total, trp_dia_pct;
+String trp_eur(float x, int dec, bool signo);
+String trp_pct(float x);
 void tr_panel(String &val, float &frac, uint16_t &col) {
+  if (trp_ok) {                                   // Trade Republic: total y cambio de hoy
+    val = trp_eur(trp_total, 0, false) + (trp_hay_dia ? "  ·  " + trp_pct(trp_dia_pct) : "");
+    frac = 0;
+    col = !trp_hay_dia ? TXT2 : trp_dia_pct >= 0 ? VERDE : ROJO;
+    return;
+  }
   if (!tr_ok) { val = T("parado"); frac = 0; col = ROJO; return; }
   val = tr_usdc(tr_pnl + tr_flot) + " USDC";
   if (tr_ab) val += " · " + String(tr_ab) + T(" abierta");
@@ -340,6 +352,167 @@ void tr_decision(int y) {
   for (int i = 0; i < n; i++) texto_mixto(g, lineas[i], 8, y + 19 + i * 14, F_PEQ, top_left);
 }
 
+
+
+// ================== Trade Republic (solo lectura) ==================
+// {"trp": {"ok", "total", "inv", "cash", "gan", "gan_pct", "dia", "dia_pct", "pos": [[nombre, valor,
+//  % ganado, peso]], "otras", "hist": [...], "rango"}} cada 5 min (traderepublic.py en el PC)
+bool trp_conocido = false, trp_ok = false, trp_hay_dia = false;
+String trp_err, trp_rango;
+float trp_total = 0, trp_inv = 0, trp_cash = 0, trp_gan = 0, trp_gan_pct = 0, trp_dia = 0, trp_dia_pct = 0;
+struct TrpPos { String n; float v, pct, peso; };
+TrpPos trp_pos[10];
+int trp_npos = 0, trp_otras = 0;
+float trp_hist[48];
+int trp_nh = 0;
+
+void trp_recibir(JsonObject o) {
+  trp_conocido = true;
+  trp_ok = (o["ok"] | 0) != 0;
+  trp_err = o["err"] | "";
+  if (!trp_ok) return;
+  trp_total = o["total"] | 0.0f;  trp_inv = o["inv"] | 0.0f;  trp_cash = o["cash"] | 0.0f;
+  trp_gan = o["gan"] | 0.0f;      trp_gan_pct = o["gan_pct"] | 0.0f;
+  trp_hay_dia = !o["dia"].isNull();
+  trp_dia = o["dia"] | 0.0f;      trp_dia_pct = o["dia_pct"] | 0.0f;
+  trp_rango = o["rango"] | "";
+  trp_npos = 0;
+  for (JsonVariant p : o["pos"].as<JsonArray>()) {
+    if (trp_npos >= 10) break;
+    trp_pos[trp_npos++] = {p[0] | "", p[1] | 0.0f, p[2] | 0.0f, p[3] | 0.0f};
+  }
+  trp_otras = o["otras"] | 0;
+  trp_nh = 0;
+  for (JsonVariant v : o["hist"].as<JsonArray>()) if (trp_nh < 48) trp_hist[trp_nh++] = v | 0.0f;
+}
+
+// 12.345,67 € (miles con punto, decimales con coma)
+String trp_eur(float x, int dec, bool signo) {
+  char b[24];
+  long entero = (long)fabsf(x);
+  int frac = (int)lroundf((fabsf(x) - entero) * (dec == 2 ? 100 : 1));
+  if (frac >= (dec == 2 ? 100 : 1)) { entero++; frac = 0; }
+  // montar de derecha a izquierda de 3 en 3
+  String s = "";
+  long n = entero;
+  do {
+    int g3 = n % 1000;
+    n /= 1000;
+    char t[6];
+    snprintf(t, sizeof(t), n > 0 ? "%03d" : "%d", g3);
+    s = String(t) + (s.length() ? "." + s : "");
+  } while (n > 0);
+  if (dec == 2) { snprintf(b, sizeof(b), ",%02d", frac); s += b; }
+  String pre = x < 0 ? "-" : (signo ? "+" : "");
+  return pre + s + " €";
+}
+
+String trp_pct(float x) {                     // +1,2 %
+  char b[16];
+  snprintf(b, sizeof(b), "%+.1f", x);
+  String s = b;
+  s.replace(".", ",");
+  return s + " %";
+}
+
+const uint16_t TRP_COLORES[] = {C565(215, 119, 87), C565(112, 190, 110), C565(232, 190, 80), C565(110, 160, 220),
+                                C565(190, 120, 200), C565(90, 190, 190), C565(220, 150, 150), C565(160, 160, 120)};
+
+void fotograma_trp() {
+  if (!trp_conocido || !trp_ok) {
+    g.setFont(F_PEQ);
+    g.setTextDatum(middle_center);
+    g.setTextColor(TXT2);
+    g.drawString("Trade Republic", 120, 110);
+    g.setTextColor(trp_conocido ? AMARILLO : TXT3);
+    g.drawString(trp_conocido ? recortar(trp_err, 224) : String(T("Cargando…")), 120, 134);
+    if (trp_conocido) {
+      g.setTextColor(TXT3);
+      g.drawString(T("En tu PC, en la carpeta clawd:"), 120, 170);
+      g.setTextColor(TXT);
+      g.drawString("uv run tr_login.py", 120, 188);
+    }
+    return;
+  }
+  // total y cambio de hoy
+  int y = BARRA_H + 34;
+  g.setFont(F_GRANDE);
+  g.setTextDatum(top_left);
+  g.setTextColor(TXT);
+  g.drawString(trp_eur(trp_total, 2, false), 8, y);
+  g.setFont(F_PEQ);
+  g.setTextDatum(top_right);
+  if (trp_hay_dia) {
+    g.setTextColor(trp_dia >= 0 ? VERDE : ROJO);
+    g.drawString(String(T("hoy ")) + trp_pct(trp_dia_pct), 234, y + 4);
+  }
+  // gráfica del valor (área)
+  const int GX = 8, GY = 82, GW = 224, GH = 72;
+  if (trp_nh >= 2) {
+    float lo = 1e12, hi = -1e12;
+    for (int i = 0; i < trp_nh; i++) { lo = min(lo, trp_hist[i]); hi = max(hi, trp_hist[i]); }
+    float m = (hi - lo) * 0.1f + 0.01f;
+    lo -= m; hi += m;
+    bool sube = trp_hist[trp_nh - 1] >= trp_hist[0];
+    uint16_t col = sube ? VERDE : ROJO, relleno = sube ? TR_VERDE_OSC : TR_ROJO_OSC;
+    int px = -1, py = -1;
+    for (int i = 0; i < trp_nh; i++) {
+      int x = GX + i * (GW - 1) / (trp_nh - 1);
+      int yv = GY + (int)lroundf((hi - trp_hist[i]) / (hi - lo) * GH);
+      if (px >= 0) {
+        for (int xx = px; xx <= x; xx++) {         // relleno bajo la línea
+          int yy = py + (yv - py) * (xx - px) / max(1, x - px);
+          g.drawFastVLine(xx, yy, GY + GH - yy, relleno);
+        }
+        g.drawLine(px, py, x, yv, col);
+        g.drawLine(px, py + 1, x, yv + 1, col);
+      }
+      px = x; py = yv;
+    }
+    g.fillCircle(px, py, 3, TXT);
+  }
+  g.setFont(F_PEQ);
+  g.setTextDatum(top_left);
+  g.setTextColor(TXT3);
+  g.drawString(trp_rango == "1m" ? T("último mes") : trp_rango, GX, GY + GH + 2);
+  // invertido, efectivo y ganancia frente a lo pagado
+  y = GY + GH + 18;
+  g.setTextColor(TXT3);
+  g.drawString(T("Invertido"), 8, y);
+  g.drawString(T("Efectivo"), 128, y);
+  g.setTextColor(TXT);
+  g.drawString(trp_eur(trp_inv, 0, false), 8, y + 13);
+  g.drawString(trp_eur(trp_cash, 0, false), 128, y + 13);
+  g.setTextColor(TXT3);
+  g.drawString(T("Ganancia"), 8, y + 29);
+  g.setTextColor(trp_gan >= 0 ? VERDE : ROJO);
+  g.setTextDatum(top_right);
+  g.drawString(trp_eur(trp_gan, 0, true) + "  (" + trp_pct(trp_gan_pct) + ")", 232, y + 29);
+  // reparto: anillo + las 4 más grandes
+  int cy = 282, cx = 34;
+  float ang = -90;
+  for (int i = 0; i < trp_npos; i++) {
+    float a2 = ang + trp_pos[i].peso * 360;
+    if (a2 - ang >= 1) g.fillArc(cx, cy, 26, 15, ang, a2, TRP_COLORES[i % 8]);
+    ang = a2;
+  }
+  if (ang < 269) g.fillArc(cx, cy, 26, 15, ang, 270, SUP2);   // el resto ("otras")
+  g.setTextDatum(middle_left);
+  for (int i = 0; i < min(trp_npos, 4); i++) {
+    int yy = 262 + i * 14;
+    g.fillRect(70, yy - 3, 6, 6, TRP_COLORES[i % 8]);
+    g.setTextColor(TXT2);
+    g.drawString(recortar(trp_pos[i].n, 92), 80, yy);
+    g.setTextDatum(middle_right);
+    g.setTextColor(TXT3);
+    g.drawString(String((int)lroundf(trp_pos[i].peso * 100)) + "%", 200, yy);
+    g.setTextColor(trp_pos[i].pct >= 0 ? VERDE : ROJO);
+    char b[12];
+    snprintf(b, sizeof(b), "%+.0f%%", trp_pos[i].pct);
+    g.drawString(b, 234, yy);
+    g.setTextDatum(middle_left);
+  }
+}
 
 // ================== tabla y ficha de operaciones ==================
 void tr_recibir_ops(JsonArray a) {
@@ -589,28 +762,29 @@ void fotograma_trading() {
   if (tr_vista == 2) { fotograma_ficha(); return; }
   tr_gy = 84; tr_gh = 124;
   // pedir el par: al entrar, al cambiar y cada 30 s (si no llega en 4 s, otra vez)
-  bool cargado = tr_par_cargado == TR_PARES[tr_sel] && tr_nv > 0;
+  bool cargado = tr_par_cargado == tr_par_sel() && tr_nv > 0;
   if (!tr_pedido || ahora - tr_pedido > (cargado && tr_llegada >= tr_pedido ? 30000u : 4000u)) tr_pedir();
 
   // fila 1: ‹ y los tres pares
   patron(g, PAT_FLECHA_IZQ, 5, 8, BARRA_H + 9, 2, TXT2);
-  for (int k = 0; k < 3; k++) {
-    int x = 22 + k * 56;
+  for (int k = 0; k < 4; k++) {                 // los 3 pares del bot y Trade Republic
+    int x = 22 + k * 44;
     bool sel = k == tr_sel;
-    g.fillRoundRect(x, BARRA_H + 4, 52, 22, 7, sel ? TXT : SUP);
+    g.fillRoundRect(x, BARRA_H + 4, 41, 22, 7, sel ? TXT : SUP);
     g.setFont(F_TXT);
     g.setTextDatum(middle_center);
     g.setTextColor(sel ? FONDO : TXT2);
-    String n = TR_PARES[k];
-    g.drawString(n.substring(0, n.indexOf('/')), x + 26, BARRA_H + 15);
+    String n = k < 3 ? String(TR_PARES[k]) : String("TR/");
+    g.drawString(n.substring(0, n.indexOf('/')), x + 20, BARRA_H + 15);
   }
+  if (tr_sel == 3) { fotograma_trp(); return; }
   // demo, y si el bot está vivo
   g.setFont(F_PEQ);
   g.setTextDatum(middle_right);
   g.setTextColor(tr_ok ? TXT3 : ROJO);
-  g.drawString(tr_ok ? "demo" : T("parado"), 234, BARRA_H + 15);
+  g.drawString(tr_ok ? "demo" : T("parado"), 236, BARRA_H + 15);
   if (ahora - tr_vivo_t < 3000)                  // punto que late: el precio llega en directo
-    g.fillCircle(234 - g.textWidth(tr_ok ? "demo" : T("parado")) - 7, BARRA_H + 15, 2 + ((ahora / 500) % 2), ROJO);
+    g.fillCircle(201, BARRA_H + 6, 2 + ((ahora / 500) % 2), ROJO);
 
   if (!cargado) {
     g.setTextDatum(middle_center);
@@ -695,11 +869,12 @@ void trading_toque(int x, int y) {
     if (y >= TR_LIN_Y - 16) tr_pag += x < 120 ? -1 : 1;  // abajo: páginas (izquierda atrás, derecha adelante)
     return;
   }
-  if (y >= 292) { SONAR(S_CLIC); tr_abrir_tabla(); return; }   // "Total … ›": la tabla
+  if (tr_sel == 3) return;                              // Trade Republic: solo mirar
+  if (y >= 292) { SONAR(S_CLIC); tr_abrir_tabla(); return; }   // "Tabla": la tabla
   if (y < BARRA_H + 30) {
     if (x < 20) { pantalla = PANT_MASCOTA; SONAR(S_CLIC); return; }   // ‹ volver
-    int k = (x - 22) / 56;
-    if (k >= 0 && k < 3 && k != tr_sel) { tr_sel = k; tr_nv = 0; tr_pedido = 0; SONAR(S_CLIC); }
+    int k = (x - 22) / 44;
+    if (k >= 0 && k < 4 && k != tr_sel) { tr_sel = k; tr_nv = 0; tr_pedido = 0; tr_par_cargado = ""; SONAR(S_CLIC); }
     return;
   }
   if (y >= TR_GY && y < TR_GY + TR_GH + 18) {   // la gráfica: 1 h <-> 4 h
