@@ -19,7 +19,9 @@ from pathlib import Path
 import chess
 import chess.pgn
 
-USUARIO = "TU_USUARIO"
+import config_local as CFG
+
+USUARIO = CFG.CHESS_USUARIO   # en ~/.config/clawd/config.json (fuera del repo)
 UA = {"User-Agent": "ClawdCompanion/1.0 (mascota de escritorio)"}
 CARPETA = Path.home() / ".local/state/clawd/ajedrez"
 PROFUNDIDAD = 14

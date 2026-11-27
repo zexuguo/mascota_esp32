@@ -28,6 +28,9 @@ Whisper y Piper), en español, inglés, chino y catalán.
 | Tu temporizador acaba | Alarma (es lo único que suena aunque esté en silencio) |
 
 ## Ponerlo en marcha
+Los datos privados (IP y MAC del sobremesa, usuario SSH, usuario de chess.com) **no están en el
+repo**: van en `~/.config/clawd/config.json`. Copia `config.ejemplo.json` ahí y rellénalo. Sin ese
+archivo, Clawd funciona igual pero sin el panel del sobremesa ni el ajedrez.
 El companion es un **servicio** (`clawd-companion`) que arranca solo al iniciar sesión.
 ```bash
 cd ~/Projects/mascota_esp32/clawd
@@ -169,7 +172,7 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
 - Añadir un texto nuevo: escribirlo con `T("...")` y añadir su fila a `TRAD` en `idiomas.h`.
 
 ## Revisión de partidas de ajedrez (chess.com)
-- Cada 2 min el companion mira la **API pública de chess.com** (`TU_USUARIO`); al acabar una partida nueva,
+- Cada 2 min el companion mira la **API pública de chess.com** (el usuario de `~/.config/clawd/config.json`); al acabar una partida nueva,
   la analiza y sale un aviso discreto. También: **Juegos → Ajedrez** → *Analizar la última*.
 - **El portátil no calcula**: las evaluaciones salen de la nube (primero la de **Lichess**, que ya tiene
   analizadas las posiciones típicas; si no, **stockfish.online**). `python-chess` solo lee la partida.
@@ -184,9 +187,9 @@ Hook `PermissionRequest` en `~/.claude/settings.json` → `hook_permiso.py` (cop
 ## El sobremesa (IA local)
 - Si el sobremesa está encendido, el panel de la mascota añade una página **Sobremesa**: el modelo de Ollama
   cargado (o "libre"), la temperatura de la GPU y la barra de VRAM usada. Si está apagado, la página no sale.
-- Sin instalar nada allí: la API de Ollama por Tailscale (`IP_DEL_SOBREMESA:11434/api/ps`) y `nvidia-smi` por
-  SSH (`usuario@sobremesa`), cada 15 s. "Encendido" = contesta el SSH; si Ollama no contesta, sale **IA parada**
+- Sin instalar nada allí: la API de Ollama por Tailscale (`<ip>:11434/api/ps`) y `nvidia-smi` por
+  SSH (`sobremesa_ssh` de la configuración), cada 15 s. "Encendido" = contesta el SSH; si Ollama no contesta, sale **IA parada**
   (p. ej. `modo-juego`).
 - **Encenderlo desde la placa:** con el sobremesa apagado la página dice *apagado · toca*; al tocarla el companion
-  manda el paquete Wake-on-LAN (MAC `MAC_DEL_SOBREMESA`, tarjeta `eno1`) y la barra se pone amarilla hasta
+  manda el paquete Wake-on-LAN (a la MAC de la configuración) y la barra se pone amarilla hasta
   90 s. Solo funciona **en casa** (misma red): fuera, el paquete no llega al sobremesa.

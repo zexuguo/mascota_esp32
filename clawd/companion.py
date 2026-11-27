@@ -42,6 +42,7 @@ import serial
 
 import idiomas_pc as I        # español, inglés, chino y catalán (idiomas_pc.py, al lado)
 import ajedrez as AJ          # revisión de partidas de chess.com (ajedrez.py, al lado)
+import config_local as CFG    # IPs, MAC y usuarios: fuera del repo (ver config_local.py)
 IDIOMA_UI = {"actual": "es"}  # el que se ha elegido en la placa (Ajustes)
 
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -927,6 +928,8 @@ class Companion:
 
     def vigilar_ajedrez(self):
         """Cada 2 min mira si has terminado una partida nueva en chess.com."""
+        if not AJ.USUARIO:
+            return                                     # sin usuario de chess.com configurado
         visto_f = AJ.CARPETA / "vista_hasta"
         while True:
             try:
@@ -946,12 +949,16 @@ class Companion:
 
     # --- el sobremesa (la "IA mixta"): ¿está encendido, qué modelo tiene cargado, cómo va la GPU? ---
     # Sin instalar nada allí: la API de Ollama por Tailscale y nvidia-smi por SSH (un usuario sin privilegios).
-    SOBREMESA_IP = "IP_DEL_SOBREMESA"      # por IP: con el nombre, Ollama contesta 403
-    SOBREMESA_MAC = "MAC_DEL_SOBREMESA" # tarjeta de red por cable (eno1), para encenderlo
+    # La IP, la MAC y el usuario SSH están en ~/.config/clawd/config.json (ver config_local.py).
+    SOBREMESA_IP = CFG.SOBREMESA_IP
+    SOBREMESA_MAC = CFG.SOBREMESA_MAC
 
     def encender_sobremesa(self):
         """Wake-on-LAN: el "paquete mágico" (6 x FF + la MAC 16 veces) por difusión en la red de casa.
         Solo funciona si el portátil está en la misma red que el sobremesa (en casa)."""
+        if not self.SOBREMESA_MAC:
+            log("Sobremesa: falta su MAC en ~/.config/clawd/config.json")
+            return
         mac = bytes.fromhex(self.SOBREMESA_MAC.replace(":", ""))
         paquete = b"\xff" * 6 + mac * 16
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
@@ -965,6 +972,8 @@ class Companion:
         log("Sobremesa: paquete de encendido enviado")
 
     def vigilar_sobremesa(self):
+        if not self.SOBREMESA_IP:
+            return                                     # sin configurar: no hay sobremesa que vigilar
         while True:
             estado = {"on": 0}
             try:
@@ -975,7 +984,7 @@ class Companion:
                     modelos = json.loads(r.read()).get("models", [])
                 estado.update(ia=1, modelo=modelos[0]["name"] if modelos else "")
                 out = subprocess.run(
-                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "usuario@sobremesa",
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", CFG.SOBREMESA_SSH,
                      "nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total "
                      "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=8).stdout
                 gpu, temp, usada, total = (int(float(x)) for x in out.strip().split(","))
